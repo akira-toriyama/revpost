@@ -141,7 +141,11 @@ func (rf rawFinding) validateRange(i int, side string) (int, error) {
 		if err != nil {
 			return 0, Validationf("bad-range", "finding[%d]: start_%v", i, err)
 		}
-		if startSide != side {
+		// A zero-length range (start == line) collapses to a single-line comment
+		// below, where start_side plays no role — so enforce the side match only for
+		// a real (start < line) range. An invalid start_side value is still rejected
+		// above, so a typo never slips through even on a collapse.
+		if start < rf.Line && startSide != side {
 			return 0, Validationf("bad-range",
 				"finding[%d]: start_side (%s) must match side (%s)", i, startSide, side)
 		}
