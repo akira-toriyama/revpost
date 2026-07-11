@@ -169,19 +169,31 @@ func snap(cs *CommentSet, f Finding, window int, p *Plan) bool {
 	return true
 }
 
-// dropReason names why an anchor could not be placed, precisely enough that each
-// answer implies a different fix: the file is not in the PR, the file has no
-// commentable line on that side at all (patch-less binary/rename, or a RIGHT
-// anchor on a pure-deletion file), or the line simply falls outside the hunks.
-func dropReason(cs *CommentSet, path, side string) string {
+// pathSideMiss classifies the two whole-file reasons an anchor cannot be placed
+// at all — the file is not in the PR, or it has no commentable line on that side
+// (patch-less binary/rename, or a RIGHT anchor on a pure-deletion file). It
+// returns "" when the path does have commentable lines on the side, meaning the
+// specific line or range is what failed. Shared by dropReason and rangeDropReason
+// so the two literal reasons live in one place.
+func pathSideMiss(cs *CommentSet, path, side string) string {
 	switch {
 	case !cs.HasPath(path):
 		return "file not in diff"
 	case !cs.HasLines(path, side):
 		return "file has no commentable lines on this side"
 	default:
-		return "line not in diff"
+		return ""
 	}
+}
+
+// dropReason names why a single-line anchor could not be placed, precisely enough
+// that each answer implies a different fix: a whole-file miss (pathSideMiss), or
+// the line simply falls outside the hunks.
+func dropReason(cs *CommentSet, path, side string) string {
+	if r := pathSideMiss(cs, path, side); r != "" {
+		return r
+	}
+	return "line not in diff"
 }
 
 // rangeCommentable reports whether a multi-line finding can be posted: both
@@ -196,11 +208,8 @@ func rangeCommentable(cs *CommentSet, f Finding) bool {
 // rangeDropReason explains why a range could not be anchored, distinguishing an
 // endpoint off the diff from a range that spans two hunks — the fixes differ.
 func rangeDropReason(cs *CommentSet, f Finding) string {
-	switch {
-	case !cs.HasPath(f.Path):
-		return "file not in diff"
-	case !cs.HasLines(f.Path, f.Side):
-		return "file has no commentable lines on this side"
+	if r := pathSideMiss(cs, f.Path, f.Side); r != "" {
+		return r
 	}
 	startH, startOK := cs.hunkID(f.Path, f.StartLine, f.Side)
 	endH, endOK := cs.hunkID(f.Path, f.Line, f.Side)
