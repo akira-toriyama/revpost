@@ -5,6 +5,23 @@
 > (API behavior, prior-art state) before building on them. revpost is the
 > write-side twin of agynio/gh-pr-review (which owns read/reply/resolve).
 
+## Status (v1 shipped)
+
+The core pipeline below is implemented: stdin findings (object or bare array) →
+commentable `(path,line,side)` set from `/pulls/N/files` → keep / snap
+(`--snap within:N`) / drop / `--fold-dropped` → one batched POST →
+`posted/snapped/dropped/folded/review_url` report. `--dry-run` and `--event`
+are wired. Layers: pure `internal/core` (findings, diff, plan, args), the
+`internal/gh` adapter (reuses `gh` auth), the `internal/cli` cobra shell.
+
+Verified against the GitHub REST API: `line`/`side` model (RIGHT=new file,
+LEFT=old, default RIGHT); `gh api --paginate` merges array pages; a COMMENT
+review with inline comments posts with the top-level body omitted.
+
+**Deferred** (rejected loudly in v1, never silently downgraded — each has a
+follow-up task): multi-line ranges + suggestion blocks (design note 3), rdjsonl
+input (note 4), the idempotency guard (note 6).
+
 ## What
 
 Read findings JSON on stdin, verify every anchor against the set of
