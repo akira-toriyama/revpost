@@ -26,6 +26,13 @@ func TestParseTarget(t *testing.T) {
 		"whitespace":   "o / r#7",
 		"flag-looking": "-o/r#7",
 		"empty":        "",
+		// A structurally valid target whose owner/repo is not a legal GitHub name
+		// is a usage error (exit 2) — not an internal/not-found error after gh
+		// mangles the endpoint.
+		"bad repo char":    "o/hello?world#7",
+		"repo dot":         "o/.#7",
+		"repo dotdot":      "o/..#7",
+		"owner underscore": "under_score/r#7", // '_' is legal in a repo, not an owner
 	}
 	for name, s := range bad {
 		t.Run(name, func(t *testing.T) {
