@@ -31,6 +31,10 @@ type Error struct {
 	// Details is optional machine-actionable payload for errors where the
 	// message alone is not enough to act on.
 	Details any
+	// Silent suppresses the stderr error envelope while still carrying the exit
+	// code — used when the command already reported its outcome on stdout (e.g. an
+	// empty result whose report was printed) and a second envelope would be noise.
+	Silent bool
 }
 
 func (e *Error) Error() string { return e.Msg }
