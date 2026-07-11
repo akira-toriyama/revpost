@@ -69,13 +69,14 @@ For every finding, revpost checks its anchor against the set of commentable
 1. **On a commentable line** → posted as-is.
 2. **Off the diff, with `--snap within:N`** → moved to the nearest commentable
    line within `N` (ties resolve to the smaller line); the comment is prefixed
-   `(re: line <original>)` and recorded under `snapped`. Without `--snap`, it is
-   dropped instead.
+   `(re: line <original>)` and recorded under `snapped`. Without `--snap` (and
+   without `--fold-dropped`), it is dropped instead.
 3. **Off the diff, with `--fold-dropped`** → appended to the review body under a
    "Findings outside the diff" section (recorded under `folded`) — **a finding
    is never lost**.
-4. **Otherwise** → recorded under `dropped` with a reason (`line not in diff` vs
-   `file not in diff`).
+4. **Otherwise** → recorded under `dropped` with a human-readable `reason`
+   (e.g. `line not in diff`, `file not in diff`, `file has no commentable lines
+   on this side`, or for a range `range spans multiple hunks`).
 
 Everything that survives is posted in **one** review request.
 
@@ -93,9 +94,9 @@ Everything that survives is posted in **one** review request.
 | Code | Meaning |
 |---|---|
 | `0` | Review posted (or a dry-run that would post). |
-| `1` | Empty result — nothing was commentable and nothing folded; no review posted. |
+| `1` | Soft miss, no review posted — either an **empty result** (nothing commentable, nothing folded, and no summary body; report on stdout, clean stderr) **or the target repo/PR was not found** (gh 404/410; JSON error envelope on stderr, no report). |
 | `2` | Bad usage / validation — fix the args or input, do not retry. |
-| `3+` | Internal / IO error (including gh failures other than 404/422). |
+| `3+` | Internal / IO error (including gh failures other than 404/410/422). |
 
 stdout carries the report only; diagnostics and the JSON error envelope
 (`{"error":{"code","message",…}}`) go to stderr. A malformed batch is rejected
