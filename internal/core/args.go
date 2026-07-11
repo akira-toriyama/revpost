@@ -1,8 +1,18 @@
 package core
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
+)
+
+// GitHub restricts owner (user/org) names to letters, digits and hyphens, and
+// repo names to letters, digits, dot, hyphen and underscore. Validating the
+// charset here keeps a typo'd target a usage error (exit 2) instead of letting a
+// mangled endpoint surface as an internal or not-found failure once gh runs.
+var (
+	ownerName = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+	repoName  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 // ParseTarget parses the positional "owner/repo#N" argument into its parts. It is
@@ -29,6 +39,14 @@ func ParseTarget(s string) (owner, repo string, number int, err error) {
 	owner, repo = repoPart[:slash], repoPart[slash+1:]
 	if owner == "" || repo == "" {
 		return "", "", 0, Validationf("bad-target", "target needs a non-empty owner and repo (got %q)", s)
+	}
+	if !ownerName.MatchString(owner) {
+		return "", "", 0, Validationf("bad-target",
+			"owner %q is not a valid GitHub name (letters, digits, hyphen)", owner)
+	}
+	if repo == "." || repo == ".." || !repoName.MatchString(repo) {
+		return "", "", 0, Validationf("bad-target",
+			"repo %q is not a valid GitHub name (letters, digits, dot, hyphen, underscore)", repo)
 	}
 
 	number, convErr := strconv.Atoi(numPart)
