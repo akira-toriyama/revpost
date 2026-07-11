@@ -62,14 +62,14 @@ func (c *CommentSet) parsePatch(path, patch string) {
 		}
 		switch line[0] {
 		case '+': // addition — new file only
-			c.add(c.right, path, newLine)
+			addCommentable(c.right, path, newLine)
 			newLine++
 		case '-': // deletion — old file only
-			c.add(c.left, path, oldLine)
+			addCommentable(c.left, path, oldLine)
 			oldLine++
 		case ' ': // context — present on both sides
-			c.add(c.right, path, newLine)
-			c.add(c.left, path, oldLine)
+			addCommentable(c.right, path, newLine)
+			addCommentable(c.left, path, oldLine)
 			newLine++
 			oldLine++
 		case '\\':
@@ -82,7 +82,7 @@ func (c *CommentSet) parsePatch(path, patch string) {
 	}
 }
 
-func (c *CommentSet) add(side map[string]map[int]struct{}, path string, line int) {
+func addCommentable(side map[string]map[int]struct{}, path string, line int) {
 	m := side[path]
 	if m == nil {
 		m = map[int]struct{}{}
@@ -103,6 +103,13 @@ func (c *CommentSet) sideMap(side string) map[string]map[int]struct{} {
 func (c *CommentSet) HasPath(path string) bool {
 	_, ok := c.paths[path]
 	return ok
+}
+
+// HasLines reports whether the path has any commentable line on the given side.
+// It is false for a patch-less file (binary/too-large/pure rename) and for a
+// RIGHT anchor on a pure-deletion file — cases where no line could ever match.
+func (c *CommentSet) HasLines(path, side string) bool {
+	return len(c.sideMap(side)[path]) > 0
 }
 
 // Commentable reports whether (path, line, side) is an anchor GitHub will accept.

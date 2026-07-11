@@ -97,7 +97,10 @@ func newRootCmd(svc core.PRService) *cobra.Command {
 		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return cmd.Help()
+				// A bare invocation is a usage error, not a report — keep stdout
+				// clean (guidance goes to stderr). `--help` still prints full help.
+				return core.Validationf("no-target",
+					"expected a target: revpost <owner/repo#N> (run 'revpost --help' for usage)")
 			}
 			opts := runOpts{
 				dryRun:      dryRun,
@@ -170,6 +173,13 @@ func runReview(ctx context.Context, svc core.PRService, args []string, opts runO
 
 	var url *string
 	if !opts.dryRun && somethingToPost {
+		// Pin the review to the head the diff was just computed from, so a push in
+		// this window can't turn a verified anchor into a 422.
+		sha, err := svc.HeadSHA(ctx, owner, repo, number)
+		if err != nil {
+			return err
+		}
+		plan.Review.CommitID = sha
 		u, err := svc.PostReview(ctx, owner, repo, number, plan.Review)
 		if err != nil {
 			return err // stdout stays clean; the report would misreport a post that failed

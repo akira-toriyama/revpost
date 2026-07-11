@@ -9,5 +9,8 @@ import "context"
 // on SIGINT/SIGTERM.
 type PRService interface {
 	Files(ctx context.Context, owner, repo string, number int) ([]File, error)
+	// HeadSHA is the PR's current head commit, used to pin the review so a moved
+	// head cannot 422 a verified anchor.
+	HeadSHA(ctx context.Context, owner, repo string, number int) (sha string, err error)
 	PostReview(ctx context.Context, owner, repo string, number int, review Review) (url string, err error)
 }

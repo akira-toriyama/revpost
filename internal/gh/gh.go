@@ -56,6 +56,21 @@ func (c *Client) Files(ctx context.Context, owner, repo string, number int) ([]c
 	return files, nil
 }
 
+// HeadSHA returns the PR's current head commit, used to pin the review so a head
+// that moves between fetching the diff and posting cannot 422 a verified anchor.
+func (c *Client) HeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
+	endpoint := fmt.Sprintf("repos/%s/%s/pulls/%d", owner, repo, number)
+	out, err := c.run(ctx, nil, "api", endpoint, "--jq", ".head.sha")
+	if err != nil {
+		return "", classify("resolve PR head", err)
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", core.Internalf("gh-decode", "gh returned an empty head SHA for %s/%s#%d", owner, repo, number)
+	}
+	return sha, nil
+}
+
 // PostReview posts the batched review in one request (body on stdin via
 // `gh api --input -`) and returns the review's html_url.
 func (c *Client) PostReview(ctx context.Context, owner, repo string, number int, review core.Review) (string, error) {

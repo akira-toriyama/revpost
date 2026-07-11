@@ -28,9 +28,13 @@ type Comment struct {
 }
 
 // Review is the batched review payload — one POST replaces the per-comment dance.
+// CommitID pins the review to the head the diff was computed from, so a push that
+// lands between fetching the diff and posting cannot turn a verified anchor into a
+// 422 (GitHub then validates anchors against that commit, not the moved head).
 type Review struct {
 	Event    string    `json:"event"`
 	Body     string    `json:"body,omitempty"`
+	CommitID string    `json:"commit_id,omitempty"`
 	Comments []Comment `json:"comments"`
 }
 
@@ -91,7 +95,7 @@ func BuildPlan(in *Input, cs *CommentSet, opts Options) *Plan {
 			folded = append(folded, f)
 		default:
 			p.Dropped = append(p.Dropped, Drop{
-				Path: f.Path, Line: f.Line, Reason: dropReason(cs, f.Path),
+				Path: f.Path, Line: f.Line, Reason: dropReason(cs, f.Path, f.Side),
 			})
 		}
 	}
@@ -140,13 +144,19 @@ func snap(cs *CommentSet, f Finding, window int, p *Plan) bool {
 	return true
 }
 
-// dropReason distinguishes a file that is not in the PR from a line that is not
-// in that file's diff — the two failures need different fixes.
-func dropReason(cs *CommentSet, path string) string {
-	if !cs.HasPath(path) {
+// dropReason names why an anchor could not be placed, precisely enough that each
+// answer implies a different fix: the file is not in the PR, the file has no
+// commentable line on that side at all (patch-less binary/rename, or a RIGHT
+// anchor on a pure-deletion file), or the line simply falls outside the hunks.
+func dropReason(cs *CommentSet, path, side string) string {
+	switch {
+	case !cs.HasPath(path):
 		return "file not in diff"
+	case !cs.HasLines(path, side):
+		return "file has no commentable lines on this side"
+	default:
+		return "line not in diff"
 	}
-	return "line not in diff"
 }
 
 // composeBody appends a "findings outside the diff" section to the review body
@@ -162,7 +172,14 @@ func composeBody(base string, folded []Finding) string {
 	}
 	b.WriteString("### Findings outside the diff\n")
 	for _, f := range folded {
-		fmt.Fprintf(&b, "- `%s:%d` — %s\n", f.Path, f.Line, f.Body)
+		fmt.Fprintf(&b, "- `%s:%d` — %s\n", f.Path, f.Line, indentContinuation(f.Body))
 	}
 	return b.String()
+}
+
+// indentContinuation indents every line after the first by two spaces so a
+// multi-line finding body stays inside its markdown bullet instead of breaking
+// the list (or injecting a sibling section).
+func indentContinuation(body string) string {
+	return strings.ReplaceAll(body, "\n", "\n  ")
 }

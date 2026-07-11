@@ -64,6 +64,48 @@ func TestBuildPlanDropsWhenNotCommentableAndNoSnap(t *testing.T) {
 	}
 }
 
+// A file that is in the PR but has no commentable line on the requested side
+// (patch-less binary/rename, or a RIGHT anchor on a pure-deletion file) gets a
+// distinct reason from a stray line inside a real diff — the fixes differ.
+func TestBuildPlanDropReasonForPatchlessFile(t *testing.T) {
+	cs := BuildCommentSet([]File{
+		{Path: "add.go", Patch: patchNetAdd},
+		{Path: "bin.png", Patch: ""}, // in the PR, but no patch
+	})
+	in := input("",
+		Finding{Path: "bin.png", Line: 1, Body: "x", Side: SideRight},  // no commentable lines
+		Finding{Path: "add.go", Line: 999, Body: "y", Side: SideRight}, // line off the diff
+	)
+	p := BuildPlan(in, cs, Options{Event: "COMMENT"})
+
+	byPath := map[string]Drop{}
+	for _, d := range p.Dropped {
+		byPath[d.Path] = d
+	}
+	if got := byPath["bin.png"].Reason; got == "line not in diff" || got == "file not in diff" {
+		t.Errorf("patch-less file reason = %q, want a distinct 'no commentable lines' message", got)
+	}
+	if got := byPath["add.go"].Reason; got != "line not in diff" {
+		t.Errorf("add.go reason = %q, want %q", got, "line not in diff")
+	}
+}
+
+// A folded finding whose body spans multiple lines must stay inside its bullet:
+// continuation lines are indented so the body can't break out of (or inject into)
+// the "Findings outside the diff" list.
+func TestBuildPlanFoldedMultilineBodyStaysInBullet(t *testing.T) {
+	in := input("", Finding{Path: "add.go", Line: 999, Body: "first line\nHIJACK", Side: SideRight})
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT", FoldDropped: true})
+	if !strings.Contains(p.Review.Body, "first line\n  HIJACK") {
+		t.Errorf("continuation line must be indented under the bullet; got:\n%s", p.Review.Body)
+	}
+	for _, ln := range strings.Split(p.Review.Body, "\n") {
+		if ln == "HIJACK" {
+			t.Errorf("a body line escaped to column 0 (list break / injection):\n%s", p.Review.Body)
+		}
+	}
+}
+
 func TestBuildPlanSnapsWithinWindow(t *testing.T) {
 	// Line 10 is 2 away from the nearest commentable RIGHT line (8).
 	in := input("", Finding{Path: "add.go", Line: 10, Body: "x", Side: SideRight})

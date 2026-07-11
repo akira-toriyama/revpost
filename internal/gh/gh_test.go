@@ -104,6 +104,45 @@ func TestPostReviewSendsPayloadAndReturnsURL(t *testing.T) {
 	}
 }
 
+func TestHeadSHAResolvesAndTrims(t *testing.T) {
+	var cap capture
+	c := &Client{run: fake(&cap, []byte("abc123def\n"), nil)}
+	sha, err := c.HeadSHA(context.Background(), "o", "r", 7)
+	if err != nil {
+		t.Fatalf("HeadSHA: %v", err)
+	}
+	if sha != "abc123def" {
+		t.Errorf("sha = %q, want abc123def (trimmed)", sha)
+	}
+	wantArgs := []string{"api", "repos/o/r/pulls/7", "--jq", ".head.sha"}
+	if strings.Join(cap.args, " ") != strings.Join(wantArgs, " ") {
+		t.Errorf("argv = %v, want %v", cap.args, wantArgs)
+	}
+}
+
+// A CommitID pins the review to a specific commit in the posted payload.
+func TestPostReviewPinsCommitID(t *testing.T) {
+	var cap capture
+	c := &Client{run: fake(&cap, []byte(`{"html_url":"u"}`), nil)}
+	_, err := c.PostReview(context.Background(), "o", "r", 1, core.Review{
+		Event:    "COMMENT",
+		CommitID: "sha-42",
+		Comments: []core.Comment{{Path: "a.go", Line: 1, Side: core.SideRight, Body: "x"}},
+	})
+	if err != nil {
+		t.Fatalf("PostReview: %v", err)
+	}
+	var top struct {
+		CommitID string `json:"commit_id"`
+	}
+	if err := json.Unmarshal(cap.stdin, &top); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if top.CommitID != "sha-42" {
+		t.Errorf("commit_id = %q, want sha-42", top.CommitID)
+	}
+}
+
 // An empty body is omitted from the payload entirely (an inline-only review),
 // rather than sent as "body":"".
 func TestPostReviewOmitsEmptyBody(t *testing.T) {

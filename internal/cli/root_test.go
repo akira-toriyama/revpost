@@ -17,6 +17,8 @@ const patchAdd = "@@ -5,3 +5,4 @@\n ctx5\n-del6\n+add_a\n+add_b\n ctx7\n"
 type fakeSvc struct {
 	files     []core.File
 	filesErr  error
+	headSHA   string
+	headErr   error
 	url       string
 	postErr   error
 	posted    *core.Review
@@ -25,6 +27,10 @@ type fakeSvc struct {
 
 func (f *fakeSvc) Files(context.Context, string, string, int) ([]core.File, error) {
 	return f.files, f.filesErr
+}
+
+func (f *fakeSvc) HeadSHA(context.Context, string, string, int) (string, error) {
+	return f.headSHA, f.headErr
 }
 
 func (f *fakeSvc) PostReview(_ context.Context, _, _ string, _ int, r core.Review) (string, error) {
@@ -71,17 +77,34 @@ func decodeReport(t *testing.T, s string) reportJSON {
 	return r
 }
 
-func addGoSvc() *fakeSvc { return &fakeSvc{files: []core.File{{Path: "add.go", Patch: patchAdd}}} }
+func addGoSvc() *fakeSvc {
+	return &fakeSvc{files: []core.File{{Path: "add.go", Patch: patchAdd}}, headSHA: "headsha1"}
+}
 
-func TestHelpRendersPlannedGrammar(t *testing.T) {
-	out, _, code := run(t, addGoSvc(), "")
+func TestHelpFlagRendersGrammar(t *testing.T) {
+	out, _, code := run(t, addGoSvc(), "", "--help")
 	if code != 0 {
-		t.Fatalf("bare invocation exit = %d, want 0 (help)", code)
+		t.Fatalf("--help exit = %d, want 0", code)
 	}
 	for _, want := range []string{"revpost", "--dry-run", "--snap"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// A bare invocation (no target) is a usage error — guidance on stderr, exit 2,
+// and stdout stays clean (it carries the report only).
+func TestBareInvocationIsUsageError(t *testing.T) {
+	out, errStr, code := run(t, addGoSvc(), "")
+	if code != int(core.CodeValidation) {
+		t.Fatalf("bare invocation exit = %d, want 2 (usage)", code)
+	}
+	if out != "" {
+		t.Errorf("stdout must stay clean, got: %s", out)
+	}
+	if !strings.Contains(errStr, "owner/repo#N") {
+		t.Errorf("stderr should guide toward the target grammar, got: %s", errStr)
 	}
 }
 
@@ -119,6 +142,9 @@ func TestPostsAndReportsURL(t *testing.T) {
 	}
 	if got := len(svc.posted.Comments); got != 1 || svc.posted.Comments[0].Line != 6 {
 		t.Errorf("posted comments = %+v", svc.posted.Comments)
+	}
+	if svc.posted.CommitID != "headsha1" {
+		t.Errorf("review must be pinned to the head SHA, got CommitID = %q", svc.posted.CommitID)
 	}
 	r := decodeReport(t, out)
 	if r.ReviewURL == nil || *r.ReviewURL != svc.url {
@@ -195,6 +221,7 @@ func TestExitCodesForBadInputs(t *testing.T) {
 		{"bad event", addGoSvc(), `[]`, []string{"o/r#7", "--event", "PENDING"}, int(core.CodeValidation)},
 		{"too many args", addGoSvc(), `[]`, []string{"o/r#7", "o/r#8"}, int(core.CodeValidation)},
 		{"files not found", &fakeSvc{filesErr: core.NotFoundf("pr", "no such PR")}, `[{"path":"a","line":1,"body":"b"}]`, []string{"o/r#7"}, int(core.CodeNotFound)},
+		{"head sha fails", &fakeSvc{files: []core.File{{Path: "add.go", Patch: patchAdd}}, headErr: core.Internalf("gh", "boom")}, `{"findings":[{"path":"add.go","line":6,"body":"b"}]}`, []string{"o/r#7"}, int(core.CodeInternal)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
