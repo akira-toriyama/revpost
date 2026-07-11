@@ -117,22 +117,62 @@ func TestParseInputFieldValidation(t *testing.T) {
 	}
 }
 
-// Multi-line ranges are out of scope for v1 and must be rejected loudly — never
-// silently downgraded to a single-line comment (which would misplace the fix).
-func TestParseInputRejectsRangesLoudly(t *testing.T) {
-	for _, src := range []string{
-		`[{"path":"a.go","line":9,"body":"msg","start_line":5}]`,
-		`[{"path":"a.go","line":9,"body":"msg","start_side":"RIGHT"}]`,
-	} {
-		_, err := ParseInput([]byte(src))
-		if err == nil {
-			t.Fatalf("ParseInput(%s) accepted a range; want a validation error", src)
-		}
-		if got := ExitCode(err); got != int(CodeValidation) {
-			t.Errorf("ExitCode = %d, want %d (validation)", got, int(CodeValidation))
-		}
-		if !strings.Contains(strings.ToLower(err.Error()), "range") {
-			t.Errorf("error should mention ranges: %q", err.Error())
-		}
+// A well-formed multi-line range is accepted: start_line is carried on the
+// Finding, start_side defaults to side, and 1 <= start_line < line holds.
+func TestParseInputAcceptsRange(t *testing.T) {
+	in, err := ParseInput([]byte(`[{"path":"a.go","line":9,"body":"msg","start_line":5}]`))
+	if err != nil {
+		t.Fatalf("ParseInput rejected a valid range: %v", err)
+	}
+	f := in.Findings[0]
+	if f.StartLine != 5 || f.Line != 9 || f.Side != SideRight {
+		t.Errorf("range finding = %+v, want start 5 / line 9 / RIGHT", f)
+	}
+
+	// An explicit start_side matching side is accepted on the LEFT too.
+	in, err = ParseInput([]byte(`[{"path":"a.go","line":9,"body":"m","side":"LEFT","start_line":5,"start_side":"left"}]`))
+	if err != nil {
+		t.Fatalf("ParseInput rejected a valid LEFT range: %v", err)
+	}
+	if f := in.Findings[0]; f.StartLine != 5 || f.Side != SideLeft {
+		t.Errorf("LEFT range = %+v, want start 5 / LEFT", f)
+	}
+}
+
+// A start_line equal to line is a zero-length range (which GitHub rejects) and
+// collapses to a single-line comment — StartLine 0, not a range.
+func TestParseInputCollapsesZeroLengthRange(t *testing.T) {
+	in, err := ParseInput([]byte(`[{"path":"a.go","line":9,"body":"m","start_line":9}]`))
+	if err != nil {
+		t.Fatalf("ParseInput: %v", err)
+	}
+	if got := in.Findings[0].StartLine; got != 0 {
+		t.Errorf("StartLine = %d, want 0 (collapsed to single-line)", got)
+	}
+}
+
+// A malformed range is rejected loudly (never silently downgraded), and the error
+// names the offending index so an agent can fix exactly that finding.
+func TestParseInputRejectsMalformedRange(t *testing.T) {
+	cases := map[string]string{
+		"start after end":      `[{"path":"a.go","line":5,"body":"m","start_line":9}]`,
+		"start below 1":        `[{"path":"a.go","line":5,"body":"m","start_line":0}]`,
+		"start_side mismatch":  `[{"path":"a.go","line":9,"body":"m","side":"RIGHT","start_line":5,"start_side":"LEFT"}]`,
+		"start_side no start":  `[{"path":"a.go","line":9,"body":"m","start_side":"RIGHT"}]`,
+		"bad start_side value": `[{"path":"a.go","line":9,"body":"m","start_line":5,"start_side":"TOP"}]`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseInput([]byte(src))
+			if err == nil {
+				t.Fatalf("ParseInput(%s) accepted a malformed range; want a validation error", src)
+			}
+			if got := ExitCode(err); got != int(CodeValidation) {
+				t.Errorf("ExitCode = %d, want %d (validation)", got, int(CodeValidation))
+			}
+			if !strings.Contains(err.Error(), "finding[0]") {
+				t.Errorf("error should name the offending index: %q", err.Error())
+			}
+		})
 	}
 }

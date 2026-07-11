@@ -18,9 +18,15 @@ type File struct {
 // of the diff, built from the PR's file patches. RIGHT holds new-file line
 // numbers (additions and context); LEFT holds old-file line numbers (deletions
 // and context). An anchor outside this set is what triggers the API's 422.
+//
+// Each commentable line is stored with the 1-based index of the hunk it belongs
+// to (per side, per path), so a multi-line range can require both endpoints to
+// sit in the SAME hunk — GitHub 422s a range that straddles two hunks. Hunks are
+// disjoint, ordered stretches of a file, so a given (side, line) maps to exactly
+// one hunk id.
 type CommentSet struct {
-	right map[string]map[int]struct{}
-	left  map[string]map[int]struct{}
+	right map[string]map[int]int
+	left  map[string]map[int]int
 	paths map[string]struct{}
 }
 
@@ -33,8 +39,8 @@ var hunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
 // tell "file not in the PR" from "line not in the diff".
 func BuildCommentSet(files []File) *CommentSet {
 	cs := &CommentSet{
-		right: map[string]map[int]struct{}{},
-		left:  map[string]map[int]struct{}{},
+		right: map[string]map[int]int{},
+		left:  map[string]map[int]int{},
 		paths: map[string]struct{}{},
 	}
 	for _, f := range files {
@@ -48,12 +54,13 @@ func (c *CommentSet) parsePatch(path, patch string) {
 	if patch == "" {
 		return
 	}
-	var oldLine, newLine int
+	var oldLine, newLine, hunkID int
 	inHunk := false
 	for _, line := range strings.Split(patch, "\n") {
 		if m := hunkHeader.FindStringSubmatch(line); m != nil {
 			oldLine, _ = strconv.Atoi(m[1])
 			newLine, _ = strconv.Atoi(m[2])
+			hunkID++ // 1-based; endpoints of a range must share this id
 			inHunk = true
 			continue
 		}
@@ -62,14 +69,14 @@ func (c *CommentSet) parsePatch(path, patch string) {
 		}
 		switch line[0] {
 		case '+': // addition — new file only
-			addCommentable(c.right, path, newLine)
+			addCommentable(c.right, path, newLine, hunkID)
 			newLine++
 		case '-': // deletion — old file only
-			addCommentable(c.left, path, oldLine)
+			addCommentable(c.left, path, oldLine, hunkID)
 			oldLine++
 		case ' ': // context — present on both sides
-			addCommentable(c.right, path, newLine)
-			addCommentable(c.left, path, oldLine)
+			addCommentable(c.right, path, newLine, hunkID)
+			addCommentable(c.left, path, oldLine, hunkID)
 			newLine++
 			oldLine++
 		case '\\':
@@ -82,16 +89,16 @@ func (c *CommentSet) parsePatch(path, patch string) {
 	}
 }
 
-func addCommentable(side map[string]map[int]struct{}, path string, line int) {
+func addCommentable(side map[string]map[int]int, path string, line, hunkID int) {
 	m := side[path]
 	if m == nil {
-		m = map[int]struct{}{}
+		m = map[int]int{}
 		side[path] = m
 	}
-	m[line] = struct{}{}
+	m[line] = hunkID
 }
 
-func (c *CommentSet) sideMap(side string) map[string]map[int]struct{} {
+func (c *CommentSet) sideMap(side string) map[string]map[int]int {
 	if side == SideLeft {
 		return c.left
 	}
@@ -114,12 +121,20 @@ func (c *CommentSet) HasLines(path, side string) bool {
 
 // Commentable reports whether (path, line, side) is an anchor GitHub will accept.
 func (c *CommentSet) Commentable(path string, line int, side string) bool {
+	_, ok := c.hunkID(path, line, side)
+	return ok
+}
+
+// hunkID returns the 1-based hunk index the (path, line, side) anchor belongs to,
+// and whether the anchor is commentable at all. A multi-line range is valid only
+// when both endpoints return the same id (same side, same hunk).
+func (c *CommentSet) hunkID(path string, line int, side string) (int, bool) {
 	m := c.sideMap(side)[path]
 	if m == nil {
-		return false
+		return 0, false
 	}
-	_, ok := m[line]
-	return ok
+	h, ok := m[line]
+	return h, ok
 }
 
 // Nearest returns the closest commentable line to `line` on (path, side) within

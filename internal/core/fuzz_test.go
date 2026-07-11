@@ -9,6 +9,8 @@ func FuzzParseInput(f *testing.F) {
 	f.Add(`{"findings":[{"path":"a.go","line":5,"body":"x"}]}`)
 	f.Add(`[{"path":"a.go","line":5,"body":"x","side":"left"}]`)
 	f.Add(`[{"path":"a.go","line":9,"body":"x","start_line":3}]`)
+	f.Add(`[{"path":"a.go","line":9,"body":"x","start_line":9}]`)  // zero-length → collapses
+	f.Add(`[{"path":"a.go","line":9,"body":"x","start_line":20}]`) // start > line → rejected
 	f.Add(``)
 	f.Add(`{`)
 	f.Add(`[1,2,3]`)
@@ -25,6 +27,10 @@ func FuzzParseInput(f *testing.F) {
 			}
 			if fnd.Side != SideRight && fnd.Side != SideLeft {
 				t.Fatalf("finding[%d] side not normalized: %q", i, fnd.Side)
+			}
+			// A range, when present, is always 1 <= start < line (equal collapses to 0).
+			if fnd.StartLine != 0 && (fnd.StartLine < 1 || fnd.StartLine >= fnd.Line) {
+				t.Fatalf("finding[%d] range not well-formed: start=%d line=%d", i, fnd.StartLine, fnd.Line)
 			}
 		}
 	})

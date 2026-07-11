@@ -46,9 +46,18 @@ Findings JSON on stdin — either a top-level object or a bare array:
 
 - `path` (required) — repo-relative file path, exactly as it appears in the PR.
 - `line` (required) — 1-based line number: the **new** file for `side: "RIGHT"`
-  (the default), the **old** file for `side: "LEFT"`.
-- `body` (required) — the inline comment, GitHub-flavored markdown.
+  (the default), the **old** file for `side: "LEFT"`. For a multi-line range this
+  is the **last** line.
+- `body` (required) — the inline comment, GitHub-flavored markdown. A
+  <code>```suggestion</code> block passes through verbatim (multi-line
+  suggestions pair with a range).
 - `side` (optional) — `RIGHT` (default) or `LEFT`.
+- `start_line` (optional) — the **first** line of a multi-line range (`start_line
+  <= line`). Both endpoints must be commentable and in the **same diff hunk**, or
+  the whole range is dropped/folded — a range is never snapped (which end moves is
+  ambiguous). `start_line == line` collapses to a single-line comment.
+- `start_side` (optional) — the range's start side; must match `side` (defaults
+  to it).
 - Unknown fields (e.g. `severity`, `rule`) are ignored, so you can carry your
   own metadata through untouched.
 
@@ -94,10 +103,9 @@ whole (exit 2) — revpost never posts a partial review from broken input.
 
 ## Scope
 
-v1 posts single-line comments. Not yet supported (rejected loudly, never
-silently downgraded): **multi-line ranges / suggestion blocks**, **rdjsonl
-input**, and an **idempotency guard** for retries. See
-[docs/design.md](docs/design.md).
+Single-line comments and **multi-line ranges / suggestion blocks** are supported.
+Not yet (rejected loudly, never silently downgraded): **rdjsonl input** and an
+**idempotency guard** for retries. See [docs/design.md](docs/design.md).
 
 ## Install
 

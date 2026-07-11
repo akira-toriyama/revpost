@@ -17,11 +17,17 @@ const (
 
 // Finding is one inbound review comment after parse+validation, before its
 // anchor is checked against the diff. Side is always normalized to RIGHT or LEFT.
+//
+// StartLine is 0 for a single-line comment; when > 0 the finding is a multi-line
+// range from StartLine to Line on Side (both endpoints share the side). A range
+// always satisfies 1 <= StartLine < Line — a start_line equal to line collapses
+// to a single-line comment at parse time.
 type Finding struct {
-	Path string
-	Line int
-	Body string
-	Side string
+	Path      string
+	Line      int
+	Body      string
+	Side      string
+	StartLine int
 }
 
 // Input is the findings payload read from stdin: an optional review summary Body
@@ -31,9 +37,9 @@ type Input struct {
 	Findings []Finding
 }
 
-// rawFinding mirrors the on-wire finding. start_line/start_side are captured only
-// to reject multi-line ranges loudly (v1 is single-line); unknown fields decode
-// away silently so callers may carry their own metadata (severity, rule, …).
+// rawFinding mirrors the on-wire finding. start_line/start_side are pointers so an
+// absent range is distinguishable from a zero value; unknown fields decode away
+// silently so callers may carry their own metadata (severity, rule, …).
 type rawFinding struct {
 	Path      string  `json:"path"`
 	Line      int     `json:"line"`
@@ -87,10 +93,6 @@ func ParseInput(data []byte) (*Input, error) {
 // validate turns a rawFinding into a Finding or a CodeValidation error naming the
 // offending index, so an agent can fix exactly the finding at fault.
 func (rf rawFinding) validate(i int) (Finding, error) {
-	if rf.StartLine != nil || rf.StartSide != nil {
-		return Finding{}, Validationf("range-unsupported",
-			"finding[%d]: multi-line ranges are not supported yet (v1) — drop start_line/start_side", i)
-	}
 	if strings.TrimSpace(rf.Path) == "" {
 		return Finding{}, Validationf("bad-finding", "finding[%d]: path is required", i)
 	}
@@ -107,7 +109,47 @@ func (rf rawFinding) validate(i int) (Finding, error) {
 	if err != nil {
 		return Finding{}, Validationf("bad-finding", "finding[%d]: %v", i, err)
 	}
-	return Finding{Path: rf.Path, Line: rf.Line, Body: rf.Body, Side: side}, nil
+	startLine, err := rf.validateRange(i, side)
+	if err != nil {
+		return Finding{}, err
+	}
+	return Finding{Path: rf.Path, Line: rf.Line, Body: rf.Body, Side: side, StartLine: startLine}, nil
+}
+
+// validateRange resolves the optional multi-line range (start_line/start_side)
+// and returns its start line — 0 for a single-line finding. A range must sit on
+// the same side as the anchor (start_side, if given, must match side) and start
+// at or before the end line. A start_line equal to line is a zero-length range,
+// which GitHub rejects, so it degenerates to a single-line comment (returns 0).
+func (rf rawFinding) validateRange(i int, side string) (int, error) {
+	if rf.StartLine == nil {
+		if rf.StartSide != nil {
+			return 0, Validationf("bad-range", "finding[%d]: start_side given without start_line", i)
+		}
+		return 0, nil
+	}
+	start := *rf.StartLine
+	if start < 1 {
+		return 0, Validationf("bad-range", "finding[%d]: start_line must be >= 1, got %d", i, start)
+	}
+	if start > rf.Line {
+		return 0, Validationf("bad-range",
+			"finding[%d]: start_line (%d) must be <= line (%d)", i, start, rf.Line)
+	}
+	if rf.StartSide != nil {
+		startSide, err := normalizeSide(*rf.StartSide)
+		if err != nil {
+			return 0, Validationf("bad-range", "finding[%d]: start_%v", i, err)
+		}
+		if startSide != side {
+			return 0, Validationf("bad-range",
+				"finding[%d]: start_side (%s) must match side (%s)", i, startSide, side)
+		}
+	}
+	if start == rf.Line {
+		return 0, nil // zero-length range → single-line comment
+	}
+	return start, nil
 }
 
 // normalizeSide upper-cases and defaults the side; an unrecognized value is an
