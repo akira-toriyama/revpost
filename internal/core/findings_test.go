@@ -151,6 +151,20 @@ func TestParseInputCollapsesZeroLengthRange(t *testing.T) {
 	}
 }
 
+// A zero-length range collapses even when start_side names the other side: once
+// the range has a single endpoint the endpoint-pair side constraint is moot, so
+// start_line == line must degenerate to a single-line comment rather than reject.
+// (A syntactically invalid start_side value is still rejected — see below.)
+func TestParseInputCollapsesZeroLengthRangeIgnoringStartSide(t *testing.T) {
+	in, err := ParseInput([]byte(`[{"path":"a.go","line":9,"body":"m","side":"RIGHT","start_line":9,"start_side":"LEFT"}]`))
+	if err != nil {
+		t.Fatalf("ParseInput rejected a collapsible zero-length range: %v", err)
+	}
+	if got := in.Findings[0].StartLine; got != 0 {
+		t.Errorf("StartLine = %d, want 0 (collapsed to single-line)", got)
+	}
+}
+
 // A malformed range is rejected loudly (never silently downgraded), and the error
 // names the offending index so an agent can fix exactly that finding.
 func TestParseInputRejectsMalformedRange(t *testing.T) {
@@ -160,6 +174,9 @@ func TestParseInputRejectsMalformedRange(t *testing.T) {
 		"start_side mismatch":  `[{"path":"a.go","line":9,"body":"m","side":"RIGHT","start_line":5,"start_side":"LEFT"}]`,
 		"start_side no start":  `[{"path":"a.go","line":9,"body":"m","start_side":"RIGHT"}]`,
 		"bad start_side value": `[{"path":"a.go","line":9,"body":"m","start_line":5,"start_side":"TOP"}]`,
+		// A collapse (start_line == line) skips the side-match check, but a
+		// syntactically invalid start_side value is still a loud error.
+		"bad start_side on collapse": `[{"path":"a.go","line":9,"body":"m","start_line":9,"start_side":"TOP"}]`,
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
