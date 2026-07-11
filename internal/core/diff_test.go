@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // A net-add hunk: one deletion, two additions around context. Additions and
 // context are commentable on RIGHT (new-file line numbers); deletions and
@@ -138,6 +141,17 @@ func TestHunkIDGroupsByHunk(t *testing.T) {
 	}
 	if _, ok := cs.hunkID("g", 5, SideRight); ok {
 		t.Error("line 5 falls in the gap between hunks; must not be commentable")
+	}
+}
+
+// ParseSnapWithin accepts an arbitrarily large window (e.g. within:<MaxInt>), so
+// Nearest must not derive its distance sentinel by adding to `within` — that would
+// overflow at math.MaxInt and return a bogus line-0 anchor instead of the true
+// nearest commentable line.
+func TestNearestHandlesMaxIntWindow(t *testing.T) {
+	cs := BuildCommentSet([]File{{Path: "add.go", Patch: patchNetAdd}}) // RIGHT {5,6,7,8}
+	if got, ok := cs.Nearest("add.go", 10, SideRight, math.MaxInt); !ok || got != 8 {
+		t.Errorf("Nearest(10, within MaxInt) = (%d, %v), want (8, true)", got, ok)
 	}
 }
 
