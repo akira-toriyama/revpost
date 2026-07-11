@@ -21,6 +21,12 @@ go vet ./...
 echo "→ go test -race"
 go test -race ./...
 
+# Bounded fuzzing actually mutates inputs; `go test -race` only replays the seed
+# corpus. These pure-core targets assert the agent-facing stdin path never panics.
+echo "→ fuzz (bounded, 15s each)"
+go test -run='^$' -fuzz='^FuzzParseInput$' -fuzztime=15s ./internal/core
+go test -run='^$' -fuzz='^FuzzBuildCommentSet$' -fuzztime=15s ./internal/core
+
 if command -v golangci-lint >/dev/null 2>&1; then
   echo "→ golangci-lint"
   golangci-lint run ./...
