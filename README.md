@@ -61,6 +61,24 @@ Findings JSON on stdin — either a top-level object or a bare array:
 - Unknown fields (e.g. `severity`, `rule`) are ignored, so you can carry your
   own metadata through untouched.
 
+#### reviewdog input (`--format rdjson` / `--format rdjsonl`)
+
+For cheap interop with the [reviewdog](https://github.com/reviewdog/reviewdog)
+ecosystem, revpost also reads rdjson diagnostics — `--format rdjsonl` for one
+diagnostic per line, `--format rdjson` for a single `{"diagnostics":[…]}` object:
+
+```console
+$ reviewdog -f=golint -diff="git diff" -filter-mode=nofilter | \
+    revpost owner/repo#123 --format rdjsonl
+```
+
+Each diagnostic maps to a finding: `location.path` → `path`, `message` → `body`,
+and the `location.range` lines → the anchor (a range whose `end.line` is past its
+`start.line` becomes a multi-line comment; otherwise it is single-line). The side
+is always `RIGHT` (diagnostics describe the new file). Everything else the format
+carries (`severity`, `source`, `code`, `suggestions`) is ignored. The native
+format stays the default; this is purely additive.
+
 ### What happens to each finding
 
 For every finding, revpost checks its anchor against the set of commentable
@@ -88,6 +106,7 @@ Everything that survives is posted in **one** review request.
 | `--snap within:N` | Snap a stray anchor to the nearest commentable line within `N`. Default: drop. |
 | `--fold-dropped` | Fold non-commentable findings into the review body instead of dropping them. |
 | `--event` | `COMMENT` (default), `REQUEST_CHANGES`, or `APPROVE`. |
+| `--format` | Input format: `native` (default), `rdjson`, or `rdjsonl` (reviewdog diagnostics). |
 
 ## Exit codes
 
@@ -104,9 +123,10 @@ whole (exit 2) — revpost never posts a partial review from broken input.
 
 ## Scope
 
-Single-line comments and **multi-line ranges / suggestion blocks** are supported.
-Not yet (rejected loudly, never silently downgraded): **rdjsonl input** and an
-**idempotency guard** for retries. See [docs/design.md](docs/design.md).
+Single-line comments, **multi-line ranges / suggestion blocks**, and **reviewdog
+rdjson/rdjsonl input** (`--format`) are supported. Not yet (rejected loudly, never
+silently downgraded): an **idempotency guard** for retries. See
+[docs/design.md](docs/design.md).
 
 ## Install
 

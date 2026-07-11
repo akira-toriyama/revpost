@@ -77,6 +77,7 @@ func newRootCmd(svc core.PRService) *cobra.Command {
 		foldDropped bool
 		snapFlag    string
 		eventFlag   string
+		formatFlag  string
 	)
 	root := &cobra.Command{
 		Use:   "revpost <owner/repo#N>",
@@ -90,7 +91,8 @@ func newRootCmd(svc core.PRService) *cobra.Command {
 			"  cat findings.json | revpost owner/repo#123 --dry-run              # same report, no post\n" +
 			"  cat findings.json | revpost owner/repo#123 --snap within:3 --fold-dropped\n\n" +
 			"Findings JSON is an object {\"body\"?, \"findings\":[…]} or a bare array; each\n" +
-			"finding is {\"path\",\"line\",\"body\",\"side\"?} (side RIGHT|LEFT, default RIGHT).",
+			"finding is {\"path\",\"line\",\"body\",\"side\"?} (side RIGHT|LEFT, default RIGHT).\n" +
+			"Pass --format rdjson|rdjsonl to read reviewdog diagnostics instead.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.Resolve().String(),
@@ -107,6 +109,7 @@ func newRootCmd(svc core.PRService) *cobra.Command {
 				foldDropped: foldDropped,
 				snap:        snapFlag,
 				event:       eventFlag,
+				format:      formatFlag,
 			}
 			return runReview(cmd.Context(), svc, args, opts)
 		},
@@ -115,6 +118,7 @@ func newRootCmd(svc core.PRService) *cobra.Command {
 	root.Flags().BoolVar(&foldDropped, "fold-dropped", false, "fold non-commentable findings into the review body instead of dropping them")
 	root.Flags().StringVar(&snapFlag, "snap", "", "snap stray anchors to the nearest commentable line: within:N (default: drop)")
 	root.Flags().StringVar(&eventFlag, "event", "COMMENT", "review event: COMMENT | REQUEST_CHANGES | APPROVE")
+	root.Flags().StringVar(&formatFlag, "format", "native", "findings input format: native | rdjson | rdjsonl")
 	root.SetOut(out)
 	root.SetErr(errOut)
 	return root
@@ -125,6 +129,7 @@ type runOpts struct {
 	foldDropped bool
 	snap        string
 	event       string
+	format      string
 }
 
 // runReview is the pipeline: validate → read findings → fetch diff → verify →
@@ -146,12 +151,16 @@ func runReview(ctx context.Context, svc core.PRService, args []string, opts runO
 	if err != nil {
 		return err
 	}
+	format, err := core.ValidateFormat(opts.format)
+	if err != nil {
+		return err
+	}
 
 	data, err := readStdin()
 	if err != nil {
 		return err
 	}
-	input, err := core.ParseInput(data)
+	input, err := core.ParseFindings(data, format)
 	if err != nil {
 		return err
 	}

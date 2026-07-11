@@ -18,13 +18,18 @@ Verified against the GitHub REST API: `line`/`side` model (RIGHT=new file,
 LEFT=old, default RIGHT); `gh api --paginate` merges array pages; a COMMENT
 review with inline comments posts with the top-level body omitted.
 
-**Shipped since v1**: multi-line ranges + suggestion blocks (design note 3) —
-`start_line`/`start_side` are verified so both endpoints sit in the same hunk
-(GitHub 422s a straddling range), ranges never snap (which end moves is
-ambiguous), and `` ```suggestion `` bodies pass through verbatim.
+**Shipped since v1**:
+- multi-line ranges + suggestion blocks (design note 3) — `start_line`/`start_side`
+  are verified so both endpoints sit in the same hunk (GitHub 422s a straddling
+  range), ranges never snap (which end moves is ambiguous), and `` ```suggestion ``
+  bodies pass through verbatim.
+- reviewdog rdjson/rdjsonl input (design note 4) — `--format rdjson|rdjsonl` maps
+  each diagnostic (`location.path`/`location.range`/`message`) onto a finding and
+  reuses the native validation; the native format stays the default. Suggestions
+  carried by a diagnostic are not yet translated into ` ```suggestion ` blocks.
 
-**Deferred** (rejected loudly, never silently downgraded — each has a follow-up
-task): rdjsonl input (note 4), the idempotency guard (note 6).
+**Deferred** (rejected loudly, never silently downgraded — has a follow-up task):
+the idempotency guard (note 6).
 
 ## What
 

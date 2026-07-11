@@ -187,6 +187,44 @@ func TestPostsMultiLineRangeWithSuggestion(t *testing.T) {
 	}
 }
 
+// End to end: --format rdjsonl reads a reviewdog diagnostic on stdin, maps it to
+// a Finding, and posts it against the diff like a native finding would.
+func TestFormatRDJSONLPostsMappedFinding(t *testing.T) {
+	svc := addGoSvc() // add.go RIGHT commentable {5,6,7,8}
+	svc.url = "u"
+	stdin := `{"message":"needs a nil check","location":{"path":"add.go","range":{"start":{"line":6}}},"severity":"WARNING"}`
+
+	out, errStr, code := run(t, svc, stdin, "o/r#7", "--format", "rdjsonl")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errStr)
+	}
+	if svc.postCalls != 1 {
+		t.Fatalf("post calls = %d, want 1", svc.postCalls)
+	}
+	c := svc.posted.Comments[0]
+	if c.Path != "add.go" || c.Line != 6 || c.Side != core.SideRight || c.Body != "needs a nil check" {
+		t.Errorf("posted comment = %+v, want {add.go 6 RIGHT 'needs a nil check'}", c)
+	}
+	if r := decodeReport(t, out); r.Posted != 1 {
+		t.Errorf("posted = %d, want 1", r.Posted)
+	}
+}
+
+// An unknown --format is a usage error (exit 2) that fails before reading stdin;
+// stdout stays clean.
+func TestBadFormatIsUsageError(t *testing.T) {
+	out, errStr, code := run(t, addGoSvc(), `[]`, "o/r#7", "--format", "sarif")
+	if code != int(core.CodeValidation) {
+		t.Fatalf("exit = %d, want 2 (usage)", code)
+	}
+	if out != "" {
+		t.Errorf("stdout must stay clean, got: %s", out)
+	}
+	if !strings.Contains(errStr, "format") {
+		t.Errorf("stderr should name the bad flag, got: %s", errStr)
+	}
+}
+
 func TestEmptyResultExitsOneWithoutPosting(t *testing.T) {
 	svc := addGoSvc()
 	out, errStr, code := run(t, svc, `{"findings":[{"path":"add.go","line":999,"body":"x"}]}`, "o/r#7")

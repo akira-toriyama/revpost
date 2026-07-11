@@ -59,4 +59,5 @@ jobs:
       - name: fuzz (bounded)
         run: |
           go test -run='^$' -fuzz='^FuzzParseInput$' -fuzztime=30s ./internal/core
+          go test -run='^$' -fuzz='^FuzzParseRDJSON$' -fuzztime=30s ./internal/core
           go test -run='^$' -fuzz='^FuzzBuildCommentSet$' -fuzztime=30s ./internal/core

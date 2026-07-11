@@ -36,6 +36,37 @@ func FuzzParseInput(f *testing.F) {
 	})
 }
 
+// ParseRDJSONL and ParseRDJSON must never panic on arbitrary bytes either — they
+// are on the same agent-facing stdin path as ParseInput, and every finding they
+// produce must be as fully normalized as a native one (side always RIGHT).
+func FuzzParseRDJSON(f *testing.F) {
+	f.Add(`{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}}}`)
+	f.Add(`{"message":"m","location":{"path":"a.go","range":{"start":{"line":5},"end":{"line":8}}}}`)
+	f.Add("l1\nl2\n\n")
+	f.Add(`{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":1}}}}]}`)
+	f.Add(``)
+	f.Add(`{`)
+	f.Fuzz(func(t *testing.T, data string) {
+		for _, parse := range []func([]byte) (*Input, error){ParseRDJSONL, ParseRDJSON} {
+			in, err := parse([]byte(data))
+			if err != nil {
+				continue
+			}
+			for i, fnd := range in.Findings {
+				if fnd.Path == "" || fnd.Line < 1 || fnd.Body == "" {
+					t.Fatalf("finding[%d] passed validation but is not well-formed: %+v", i, fnd)
+				}
+				if fnd.Side != SideRight {
+					t.Fatalf("finding[%d] rdjson side must be RIGHT: %q", i, fnd.Side)
+				}
+				if fnd.StartLine != 0 && (fnd.StartLine < 1 || fnd.StartLine >= fnd.Line) {
+					t.Fatalf("finding[%d] range not well-formed: start=%d line=%d", i, fnd.StartLine, fnd.Line)
+				}
+			}
+		}
+	})
+}
+
 // BuildCommentSet + the query methods must never panic on a malformed patch, and
 // a Nearest hit must itself be commentable (snapping never invents a bad anchor).
 func FuzzBuildCommentSet(f *testing.F) {
