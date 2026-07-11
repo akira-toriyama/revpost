@@ -120,6 +120,22 @@ func TestHeadSHAResolvesAndTrims(t *testing.T) {
 	}
 }
 
+// An empty head SHA is an internal error (gh-decode), not a silently un-pinned
+// review — the anti-422 head-pinning invariant depends on this guard.
+func TestHeadSHAEmptyIsInternalError(t *testing.T) {
+	c := &Client{run: fake(new(capture), []byte("\n"), nil)}
+	_, err := c.HeadSHA(context.Background(), "o", "r", 7)
+	if err == nil {
+		t.Fatal("want an error for an empty head SHA")
+	}
+	if got := core.ExitCode(err); got != int(core.CodeInternal) {
+		t.Errorf("ExitCode = %d, want internal", got)
+	}
+	if ce := core.AsError(err); ce == nil || ce.ID != "gh-decode" {
+		t.Errorf("want a gh-decode error, got %v", err)
+	}
+}
+
 // A CommitID pins the review to a specific commit in the posted payload.
 func TestPostReviewPinsCommitID(t *testing.T) {
 	var cap capture
@@ -174,6 +190,7 @@ func TestErrorClassification(t *testing.T) {
 		want   int
 	}{
 		{"gh: Not Found (HTTP 404)", int(core.CodeNotFound)},
+		{"gh: Gone (HTTP 410)", int(core.CodeNotFound)},
 		{"gh: Validation Failed (HTTP 422)", int(core.CodeValidation)},
 		{"gh: Bad credentials (HTTP 401)", int(core.CodeInternal)},
 		{"some non-http failure", int(core.CodeInternal)},

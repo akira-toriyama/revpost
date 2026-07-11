@@ -221,6 +221,58 @@ func TestBuildPlanFoldDroppedPreservesFinding(t *testing.T) {
 			t.Errorf("review body must contain %q; got:\n%s", want, p.Review.Body)
 		}
 	}
+	// Lock the section structure: operator summary on top, then the separator and
+	// header, and the single-line location rendered as "path:line".
+	if wantPrefix := "summary\n\n---\n### Findings outside the diff\n"; !strings.HasPrefix(p.Review.Body, wantPrefix) {
+		t.Errorf("body must start with the summary then separator+header; got:\n%s", p.Review.Body)
+	}
+	if !strings.Contains(p.Review.Body, "add.go:100") {
+		t.Errorf("single-line folded finding must render as add.go:100; got:\n%s", p.Review.Body)
+	}
+}
+
+// A LEFT-side finding produces a LEFT comment, and a LEFT range carries
+// start_side LEFT — the rest of the suite exercises only RIGHT, so a hardcoded
+// Side:RIGHT in BuildPlan would otherwise slip through.
+func TestBuildPlanLeftSide(t *testing.T) {
+	cs := findingsCS() // add.go LEFT commentable {5,6,7}
+
+	single := BuildPlan(input("", Finding{Path: "add.go", Line: 6, Body: "x", Side: SideLeft}), cs, Options{Event: "COMMENT"})
+	if len(single.Review.Comments) != 1 || single.Review.Comments[0].Side != SideLeft {
+		t.Fatalf("LEFT single = %+v, want one LEFT comment", single.Review.Comments)
+	}
+
+	rng := BuildPlan(input("", Finding{Path: "add.go", Line: 7, Body: "x", Side: SideLeft, StartLine: 5}), cs, Options{Event: "COMMENT"})
+	if len(rng.Review.Comments) != 1 {
+		t.Fatalf("LEFT range comments = %d, want 1", len(rng.Review.Comments))
+	}
+	if c := rng.Review.Comments[0]; c.Side != SideLeft || c.StartSide != SideLeft || c.StartLine != 5 {
+		t.Errorf("LEFT range = %+v, want side/start_side LEFT, start 5", c)
+	}
+}
+
+// A range with only its START off the diff, and a range with BOTH endpoints off,
+// each drop with their own reason — mirrors of the off-diff-END case, so a
+// start/end mix-up in rangeDropReason can't hide behind the one tested branch.
+func TestBuildPlanRangeDropReasonsByEndpoint(t *testing.T) {
+	cs := findingsCS() // add.go RIGHT {5,6,7,8}
+	cases := []struct {
+		name       string
+		start, end int
+		wantReason string
+	}{
+		{"start off, end on", 2, 6, "range start not in diff"},
+		{"both endpoints off", 2, 3, "range endpoints not in diff"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := input("", Finding{Path: "add.go", Line: tc.end, Body: "x", Side: SideRight, StartLine: tc.start})
+			p := BuildPlan(in, cs, Options{Event: "COMMENT"})
+			if len(p.Dropped) != 1 || p.Dropped[0].Reason != tc.wantReason {
+				t.Errorf("Dropped = %+v, want one reason %q", p.Dropped, tc.wantReason)
+			}
+		})
+	}
 }
 
 func TestBuildPlanBodyIsInputBodyWhenNothingFolded(t *testing.T) {

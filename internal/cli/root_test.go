@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/akira-toriyama/revpost/internal/core"
 )
@@ -253,6 +257,10 @@ func TestExitCodesForBadInputs(t *testing.T) {
 		{"too many args", addGoSvc(), `[]`, []string{"o/r#7", "o/r#8"}, int(core.CodeValidation)},
 		{"files not found", &fakeSvc{filesErr: core.NotFoundf("pr", "no such PR")}, `[{"path":"a","line":1,"body":"b"}]`, []string{"o/r#7"}, int(core.CodeNotFound)},
 		{"head sha fails", &fakeSvc{files: []core.File{{Path: "add.go", Patch: patchAdd}}, headErr: core.Internalf("gh", "boom")}, `{"findings":[{"path":"add.go","line":6,"body":"b"}]}`, []string{"o/r#7"}, int(core.CodeInternal)},
+		// An unrecognized flag never reaches runReview (cobra rejects it), so it is a
+		// bare error mapped to usage by runWith's fallback — a divergence from
+		// core.ExitCode's unknown->internal default that only this path exercises.
+		{"unknown flag", addGoSvc(), `[]`, []string{"o/r#7", "--bogus"}, int(core.CodeValidation)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,5 +297,97 @@ func TestRenderErrorNoHTMLEscape(t *testing.T) {
 	}
 	if !strings.Contains(got, "line <html> & path a>b") {
 		t.Errorf("message not emitted verbatim: %s", got)
+	}
+}
+
+// A PostReview failure must surface its exit code and keep stdout clean — a
+// report on stdout would misreport a post that never landed. (postErr was an
+// unexercised fixture until this test.)
+func TestPostFailureExitCodeAndCleanStdout(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"internal", core.Internalf("gh", "boom"), int(core.CodeInternal)},
+		{"residual 422", core.Validationf("gh-api", "post review: line must be part of the diff (HTTP 422)"), int(core.CodeValidation)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := addGoSvc()
+			svc.postErr = tc.err
+			out, errStr, code := run(t, svc, `{"findings":[{"path":"add.go","line":6,"body":"bug"}]}`, "o/r#7")
+			if code != tc.want {
+				t.Fatalf("exit = %d, want %d", code, tc.want)
+			}
+			if svc.postCalls != 1 {
+				t.Errorf("post should be attempted once, got %d", svc.postCalls)
+			}
+			if out != "" {
+				t.Errorf("a failed post must keep stdout clean, got: %s", out)
+			}
+			if errStr == "" {
+				t.Error("a failed post should report on stderr")
+			}
+		})
+	}
+}
+
+// A non-default --event flows through validation (and normalization) to the
+// posted review. The flag default is already the normalized "COMMENT", so only a
+// non-default value proves the wiring rather than a coincidental default.
+func TestNonDefaultEventReachesReview(t *testing.T) {
+	svc := addGoSvc()
+	svc.url = "u"
+	_, errStr, code := run(t, svc, `{"findings":[{"path":"add.go","line":6,"body":"bug"}]}`,
+		"o/r#7", "--event", "request_changes")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errStr)
+	}
+	if svc.posted.Event != "REQUEST_CHANGES" {
+		t.Errorf("posted event = %q, want REQUEST_CHANGES (validated + normalized through the flag)", svc.posted.Event)
+	}
+}
+
+// A piped *os.File (non-char-device) must NOT trip the terminal guard — this is
+// the real `cat findings.json | revpost` path, which the strings.Reader harness
+// can't exercise.
+func TestPipedFileStdinIsNotTreatedAsTerminal(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		_, _ = io.WriteString(w, `{"findings":[{"path":"add.go","line":6,"body":"bug"}]}`)
+		_ = w.Close()
+	}()
+
+	var o, e bytes.Buffer
+	oldIn, oldOut, oldErr := in, out, errOut
+	in, out, errOut = r, &o, &e
+	defer func() { in, out, errOut = oldIn, oldOut, oldErr }()
+
+	if code := runWith(context.Background(), addGoSvc(), []string{"o/r#7", "--dry-run"}); code != 0 {
+		t.Fatalf("piped *os.File tripped the terminal guard: exit=%d stderr=%s", code, e.String())
+	}
+	if decodeReport(t, o.String()).Posted != 1 {
+		t.Errorf("payload from an *os.File pipe should read normally")
+	}
+}
+
+// A stdin read that fails mid-stream is an internal IO error (exit 3), distinct
+// from the exit-2 used for empty/malformed input, and stdout stays clean.
+func TestStdinReadFailureIsInternal(t *testing.T) {
+	var o, e bytes.Buffer
+	oldIn, oldOut, oldErr := in, out, errOut
+	in, out, errOut = iotest.ErrReader(errors.New("boom")), &o, &e
+	defer func() { in, out, errOut = oldIn, oldOut, oldErr }()
+
+	code := runWith(context.Background(), addGoSvc(), []string{"o/r#7"})
+	if code != int(core.CodeInternal) {
+		t.Fatalf("read failure exit = %d, want %d (internal)", code, int(core.CodeInternal))
+	}
+	if o.String() != "" {
+		t.Errorf("stdout must stay clean on an IO fault, got: %s", o.String())
 	}
 }
