@@ -140,13 +140,15 @@ func (c *CommentSet) hunkID(path string, line int, side string) (int, bool) {
 // Nearest returns the closest commentable line to `line` on (path, side) within
 // `within` lines, and whether one was found. Ties (equal distance above and
 // below) resolve to the smaller line so the result is deterministic. within < 1
-// disables the search.
+// disables the search. The best-so-far is tracked with a `found` flag rather than
+// a within-derived sentinel, so an arbitrarily large window (up to math.MaxInt,
+// which ParseSnapWithin accepts) can't overflow into a bogus line-0 anchor.
 func (c *CommentSet) Nearest(path string, line int, side string, within int) (int, bool) {
 	m := c.sideMap(side)[path]
 	if m == nil || within < 1 {
 		return 0, false
 	}
-	best, bestDist := 0, within+1
+	best, bestDist, found := 0, 0, false
 	for cand := range m {
 		d := cand - line
 		if d < 0 {
@@ -155,12 +157,9 @@ func (c *CommentSet) Nearest(path string, line int, side string, within int) (in
 		if d > within {
 			continue
 		}
-		if d < bestDist || (d == bestDist && cand < best) {
-			best, bestDist = cand, d
+		if !found || d < bestDist || (d == bestDist && cand < best) {
+			best, bestDist, found = cand, d, true
 		}
 	}
-	if bestDist > within {
-		return 0, false
-	}
-	return best, true
+	return best, found
 }
