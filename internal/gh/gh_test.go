@@ -104,6 +104,36 @@ func TestPostReviewSendsPayloadAndReturnsURL(t *testing.T) {
 	}
 }
 
+func TestReviewCommentsRequestsAndDecodes(t *testing.T) {
+	var cap capture
+	body := `[
+		{"path":"a.go","side":"RIGHT","line":10,"body":"c1"},
+		{"path":"b.go","side":"LEFT","start_line":3,"line":6,"body":"c2"},
+		{"path":"c.go","line":5,"body":"c3"}
+	]`
+	c := &Client{run: fake(&cap, []byte(body), nil)}
+
+	got, err := c.ReviewComments(context.Background(), "o", "r", 7)
+	if err != nil {
+		t.Fatalf("ReviewComments: %v", err)
+	}
+	wantArgs := []string{"api", "--paginate", "repos/o/r/pulls/7/comments?per_page=100"}
+	if strings.Join(cap.args, " ") != strings.Join(wantArgs, " ") {
+		t.Errorf("argv = %v, want %v", cap.args, wantArgs)
+	}
+	if len(got) != 3 {
+		t.Fatalf("comments = %d, want 3", len(got))
+	}
+	if got[1].StartLine != 3 || got[1].Line != 6 || got[1].Side != core.SideLeft || got[1].Body != "c2" {
+		t.Errorf("range comment = %+v, want {b.go LEFT 3-6 c2}", got[1])
+	}
+	// A comment gh returns without a side defaults to RIGHT, matching how revpost
+	// posts, so the guard can still match it.
+	if got[2].Side != core.SideRight {
+		t.Errorf("side-less comment = %+v, want side RIGHT", got[2])
+	}
+}
+
 func TestHeadSHAResolvesAndTrims(t *testing.T) {
 	var cap capture
 	c := &Client{run: fake(&cap, []byte("abc123def\n"), nil)}

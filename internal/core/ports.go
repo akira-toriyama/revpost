@@ -12,5 +12,8 @@ type PRService interface {
 	// HeadSHA is the PR's current head commit, used to pin the review so a moved
 	// head cannot 422 a verified anchor.
 	HeadSHA(ctx context.Context, owner, repo string, number int) (sha string, err error)
+	// ReviewComments are the PR's existing inline review comments, used by the
+	// idempotency guard to skip a comment that was already posted (agents retry).
+	ReviewComments(ctx context.Context, owner, repo string, number int) ([]ExistingComment, error)
 	PostReview(ctx context.Context, owner, repo string, number int, review Review) (url string, err error)
 }

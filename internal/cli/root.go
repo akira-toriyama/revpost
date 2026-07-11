@@ -176,9 +176,23 @@ func runReview(ctx context.Context, svc core.PRService, args []string, opts runO
 		Event:       event,
 	})
 
-	// Something to post = at least one inline comment, or a review body (an
-	// operator summary and/or folded findings). Otherwise there is nothing to say.
-	somethingToPost := len(plan.Review.Comments) > 0 || plan.Review.Body != ""
+	// Idempotency guard: drop any comment already on the PR so a retry (after a
+	// timeout) posts only genuinely new comments instead of double-posting. Only
+	// worth the fetch when there are inline comments to check; runs for --dry-run
+	// too, so the report shows what would be skipped.
+	if len(plan.Review.Comments) > 0 {
+		existing, err := svc.ReviewComments(ctx, owner, repo, number)
+		if err != nil {
+			return err
+		}
+		plan.SkipExisting(existing)
+	}
+
+	// Something to post = at least one new inline comment, or a review body that is
+	// the operator's own. When every comment was skipped as a duplicate, an
+	// operator summary is NOT re-posted (the review already exists); a first post,
+	// which skips nothing, keeps its original body-only behavior.
+	somethingToPost := len(plan.Review.Comments) > 0 || (plan.Review.Body != "" && len(plan.Skipped) == 0)
 
 	var url *string
 	if !opts.dryRun && somethingToPost {

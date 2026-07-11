@@ -20,14 +20,17 @@ const patchAdd = "@@ -5,3 +5,4 @@\n ctx5\n-del6\n+add_a\n+add_b\n ctx7\n"
 
 // fakeSvc is an in-memory PRService: no network, records what was posted.
 type fakeSvc struct {
-	files     []core.File
-	filesErr  error
-	headSHA   string
-	headErr   error
-	url       string
-	postErr   error
-	posted    *core.Review
-	postCalls int
+	files        []core.File
+	filesErr     error
+	headSHA      string
+	headErr      error
+	existing     []core.ExistingComment
+	existingErr  error
+	commentCalls int
+	url          string
+	postErr      error
+	posted       *core.Review
+	postCalls    int
 }
 
 func (f *fakeSvc) Files(context.Context, string, string, int) ([]core.File, error) {
@@ -36,6 +39,11 @@ func (f *fakeSvc) Files(context.Context, string, string, int) ([]core.File, erro
 
 func (f *fakeSvc) HeadSHA(context.Context, string, string, int) (string, error) {
 	return f.headSHA, f.headErr
+}
+
+func (f *fakeSvc) ReviewComments(context.Context, string, string, int) ([]core.ExistingComment, error) {
+	f.commentCalls++
+	return f.existing, f.existingErr
 }
 
 func (f *fakeSvc) PostReview(_ context.Context, _, _ string, _ int, r core.Review) (string, error) {
@@ -59,6 +67,11 @@ type reportJSON struct {
 		Path string
 		Line int
 	} `json:"folded"`
+	Skipped []struct {
+		Path      string
+		Line      int
+		StartLine int `json:"start_line"`
+	} `json:"skipped"`
 	ReviewURL *string `json:"review_url"`
 }
 
@@ -222,6 +235,105 @@ func TestBadFormatIsUsageError(t *testing.T) {
 	}
 	if !strings.Contains(errStr, "format") {
 		t.Errorf("stderr should name the bad flag, got: %s", errStr)
+	}
+}
+
+// Idempotency guard: a comment already on the PR is skipped, not re-posted. When
+// it is the only finding, the run posts nothing and exits 1 (a clean retry
+// no-op), reporting the skip.
+func TestIdempotentGuardSkipsAlreadyPostedComment(t *testing.T) {
+	svc := addGoSvc()
+	svc.existing = []core.ExistingComment{{Path: "add.go", Side: core.SideRight, Line: 6, Body: "dup"}}
+
+	out, errStr, code := run(t, svc, `{"findings":[{"path":"add.go","line":6,"body":"dup"}]}`, "o/r#7")
+	if code != int(core.CodeNotFound) {
+		t.Fatalf("exit = %d, want 1 (everything already posted)", code)
+	}
+	if svc.postCalls != 0 {
+		t.Errorf("an all-duplicate retry must not post, got %d calls", svc.postCalls)
+	}
+	if errStr != "" {
+		t.Errorf("an idempotent no-op is reported on stdout; stderr must stay clean, got: %s", errStr)
+	}
+	r := decodeReport(t, out)
+	if r.Posted != 0 || len(r.Skipped) != 1 || r.Skipped[0].Line != 6 {
+		t.Errorf("report = %+v, want posted 0 / one skipped line 6", r)
+	}
+}
+
+// A first post (no existing comments) is unaffected by the guard: it fetches,
+// finds nothing to skip, and posts every comment.
+func TestIdempotentGuardFirstPostUnaffected(t *testing.T) {
+	svc := addGoSvc()
+	svc.url = "u"
+	out, _, code := run(t, svc, `{"findings":[{"path":"add.go","line":6,"body":"new"}]}`, "o/r#7")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if svc.commentCalls != 1 {
+		t.Errorf("guard should query existing comments once, got %d", svc.commentCalls)
+	}
+	if svc.postCalls != 1 || len(svc.posted.Comments) != 1 {
+		t.Errorf("a first post must post all comments: postCalls=%d posted=%+v", svc.postCalls, svc.posted)
+	}
+	if r := decodeReport(t, out); len(r.Skipped) != 0 {
+		t.Errorf("nothing should be skipped on a first post, got %+v", r.Skipped)
+	}
+}
+
+// A new comment alongside a duplicate: only the new one posts; the duplicate is
+// reported skipped.
+func TestIdempotentGuardPostsOnlyNewComments(t *testing.T) {
+	svc := addGoSvc()
+	svc.url = "u"
+	svc.existing = []core.ExistingComment{{Path: "add.go", Side: core.SideRight, Line: 6, Body: "dup"}}
+
+	out, _, code := run(t, svc, `{"findings":[
+		{"path":"add.go","line":6,"body":"dup"},
+		{"path":"add.go","line":7,"body":"new"}
+	]}`, "o/r#7")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if svc.postCalls != 1 || len(svc.posted.Comments) != 1 || svc.posted.Comments[0].Line != 7 {
+		t.Errorf("only the new line-7 comment should post, got %+v", svc.posted.Comments)
+	}
+	r := decodeReport(t, out)
+	if r.Posted != 1 || len(r.Skipped) != 1 || r.Skipped[0].Line != 6 {
+		t.Errorf("report = %+v, want posted 1 / one skipped line 6", r)
+	}
+}
+
+// --dry-run still consults the guard and reports skips without posting.
+func TestIdempotentGuardReportedUnderDryRun(t *testing.T) {
+	svc := addGoSvc()
+	svc.existing = []core.ExistingComment{{Path: "add.go", Side: core.SideRight, Line: 6, Body: "dup"}}
+	out, _, code := run(t, svc, `{"findings":[{"path":"add.go","line":6,"body":"dup"}]}`, "o/r#7", "--dry-run")
+	if code != int(core.CodeNotFound) {
+		t.Fatalf("exit = %d, want 1 (all skipped)", code)
+	}
+	if svc.postCalls != 0 {
+		t.Errorf("dry-run must not post")
+	}
+	if r := decodeReport(t, out); len(r.Skipped) != 1 {
+		t.Errorf("dry-run should report the skip, got %+v", r.Skipped)
+	}
+}
+
+// A failure fetching existing comments aborts before posting (no partial review),
+// classified by its exit code — consistent with the Files/HeadSHA fetches.
+func TestIdempotentGuardFetchErrorAborts(t *testing.T) {
+	svc := addGoSvc()
+	svc.existingErr = core.Internalf("gh", "comments boom")
+	out, _, code := run(t, svc, `{"findings":[{"path":"add.go","line":6,"body":"x"}]}`, "o/r#7")
+	if code != int(core.CodeInternal) {
+		t.Fatalf("exit = %d, want 3 (internal)", code)
+	}
+	if svc.postCalls != 0 {
+		t.Errorf("a guard-fetch failure must not post, got %d calls", svc.postCalls)
+	}
+	if out != "" {
+		t.Errorf("a hard error must keep stdout clean, got: %s", out)
 	}
 }
 

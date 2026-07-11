@@ -27,9 +27,13 @@ review with inline comments posts with the top-level body omitted.
   each diagnostic (`location.path`/`location.range`/`message`) onto a finding and
   reuses the native validation; the native format stays the default. Suggestions
   carried by a diagnostic are not yet translated into ` ```suggestion ` blocks.
+- idempotency guard (design note 6) — before posting, existing inline comments are
+  fetched and any comment revpost would post that already exists (exact anchor +
+  body match) is skipped and reported under `skipped`; an all-duplicate re-run is
+  a clean exit-1 no-op. Default-on, since a first post skips nothing; a fetch
+  failure aborts before posting (consistent with the diff/head fetches).
 
-**Deferred** (rejected loudly, never silently downgraded — has a follow-up task):
-the idempotency guard (note 6).
+The core pipeline design (notes 1–7) is now fully implemented.
 
 ## What
 

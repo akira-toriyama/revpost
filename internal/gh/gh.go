@@ -56,6 +56,44 @@ func (c *Client) Files(ctx context.Context, owner, repo string, number int) ([]c
 	return files, nil
 }
 
+// wireComment is the subset of a /pulls/N/comments entry the idempotency guard
+// needs. line/start_line are absent (null) for an outdated comment whose diff
+// moved; they decode to 0, which matches no built comment, so an outdated comment
+// simply is not deduped.
+type wireComment struct {
+	Path      string `json:"path"`
+	Side      string `json:"side"`
+	Line      int    `json:"line"`
+	StartLine int    `json:"start_line"`
+	Body      string `json:"body"`
+}
+
+// ReviewComments fetches every existing inline review comment (all pages) for the
+// PR, for the idempotency guard. An empty side (GitHub omits it for some
+// single-line comments) defaults to RIGHT to match how revpost posts.
+func (c *Client) ReviewComments(ctx context.Context, owner, repo string, number int) ([]core.ExistingComment, error) {
+	endpoint := fmt.Sprintf("repos/%s/%s/pulls/%d/comments?per_page=100", owner, repo, number)
+	out, err := c.run(ctx, nil, "api", "--paginate", endpoint)
+	if err != nil {
+		return nil, classify("fetch PR comments", err)
+	}
+	var wire []wireComment
+	if err := json.Unmarshal(out, &wire); err != nil {
+		return nil, core.Internalf("gh-decode", "could not decode PR comments from gh: %v", err)
+	}
+	comments := make([]core.ExistingComment, len(wire))
+	for i, w := range wire {
+		side := w.Side
+		if side == "" {
+			side = core.SideRight
+		}
+		comments[i] = core.ExistingComment{
+			Path: w.Path, Side: side, Line: w.Line, StartLine: w.StartLine, Body: w.Body,
+		}
+	}
+	return comments, nil
+}
+
 // HeadSHA returns the PR's current head commit, used to pin the review so a head
 // that moves between fetching the diff and posting cannot 422 a verified anchor.
 func (c *Client) HeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
