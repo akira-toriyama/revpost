@@ -310,6 +310,76 @@ func TestPlanReport(t *testing.T) {
 	}
 }
 
+// SkipExisting drops a built comment that already exists on the PR (an exact
+// anchor+body match), records it under Skipped, and leaves genuinely new comments
+// to post — the idempotency guard for retried runs.
+func TestSkipExistingDropsDuplicates(t *testing.T) {
+	in := input("",
+		Finding{Path: "add.go", Line: 6, Body: "already there", Side: SideRight}, // dup
+		Finding{Path: "add.go", Line: 7, Body: "brand new", Side: SideRight},     // new
+	)
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT"})
+	if len(p.Review.Comments) != 2 {
+		t.Fatalf("precondition: Comments = %d, want 2", len(p.Review.Comments))
+	}
+
+	p.SkipExisting([]ExistingComment{
+		{Path: "add.go", Side: SideRight, Line: 6, Body: "already there"},
+		{Path: "other.go", Side: SideRight, Line: 6, Body: "unrelated (someone else's)"},
+	})
+
+	if len(p.Review.Comments) != 1 || p.Review.Comments[0].Line != 7 {
+		t.Errorf("kept comments = %+v, want only the new line-7 comment", p.Review.Comments)
+	}
+	if len(p.Skipped) != 1 || p.Skipped[0] != (Skip{Path: "add.go", Line: 6}) {
+		t.Errorf("Skipped = %+v, want one {add.go 6}", p.Skipped)
+	}
+}
+
+// The match is on the exact built body, so a comment differing only in body (a
+// changed finding, or a snapped comment's "(re: line N)" prefix) is NOT a
+// duplicate — it posts.
+func TestSkipExistingMatchesExactBodyAndAnchor(t *testing.T) {
+	in := input("", Finding{Path: "add.go", Line: 6, Body: "v2 message", Side: SideRight})
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT"})
+	p.SkipExisting([]ExistingComment{
+		{Path: "add.go", Side: SideRight, Line: 6, Body: "v1 message"}, // same anchor, older body
+		{Path: "add.go", Side: SideLeft, Line: 6, Body: "v2 message"},  // same body, other side
+	})
+	if len(p.Review.Comments) != 1 || len(p.Skipped) != 0 {
+		t.Errorf("a body/side mismatch must not be skipped: comments=%+v skipped=%+v", p.Review.Comments, p.Skipped)
+	}
+}
+
+// A range comment is deduped on its full span (start_line included), and the Skip
+// row carries the span.
+func TestSkipExistingRange(t *testing.T) {
+	in := input("", Finding{Path: "add.go", Line: 8, Body: "range", Side: SideRight, StartLine: 5})
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT"})
+	p.SkipExisting([]ExistingComment{
+		{Path: "add.go", Side: SideRight, Line: 8, StartLine: 5, Body: "range"},
+	})
+	if len(p.Review.Comments) != 0 {
+		t.Fatalf("duplicate range must be skipped, got %+v", p.Review.Comments)
+	}
+	if len(p.Skipped) != 1 || p.Skipped[0] != (Skip{Path: "add.go", Line: 8, StartLine: 5}) {
+		t.Errorf("Skipped = %+v, want one {add.go 8 start 5}", p.Skipped)
+	}
+}
+
+// A nil/empty existing set is a no-op — a first post is never touched by the guard.
+func TestSkipExistingEmptyIsNoop(t *testing.T) {
+	in := input("", Finding{Path: "add.go", Line: 6, Body: "x", Side: SideRight})
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT"})
+	p.SkipExisting(nil)
+	if len(p.Review.Comments) != 1 || len(p.Skipped) != 0 {
+		t.Errorf("empty guard changed the plan: comments=%+v skipped=%+v", p.Review.Comments, p.Skipped)
+	}
+	if p.Report(nil).Skipped == nil {
+		t.Error("Report.Skipped must be non-nil so it renders as [] not null")
+	}
+}
+
 func TestBuildPlanPreservesFindingOrder(t *testing.T) {
 	in := input("",
 		Finding{Path: "add.go", Line: 6, Body: "a", Side: SideRight},  // keep

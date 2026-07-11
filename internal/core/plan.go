@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -67,14 +68,35 @@ type Fold struct {
 	StartLine int    `json:"start_line,omitempty"`
 }
 
+// ExistingComment is one inline review comment already on the PR. The idempotency
+// guard (SkipExisting) uses it to drop a comment that was already posted — agents
+// retry after timeouts, which would otherwise double-post. Its fields mirror the
+// subset of a built Comment that identifies it.
+type ExistingComment struct {
+	Path      string
+	Side      string
+	Line      int
+	StartLine int
+	Body      string
+}
+
+// Skip records a comment that was not posted because an identical one is already
+// on the PR (the idempotency guard). StartLine is set only for a range.
+type Skip struct {
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	StartLine int    `json:"start_line,omitempty"`
+}
+
 // Plan is the outcome of verifying every finding against the diff: the review to
 // post plus the machine-readable account of what happened to each finding. The
-// three report slices are always non-nil so the report renders as [] not null.
+// report slices are always non-nil so the report renders as [] not null.
 type Plan struct {
 	Review  Review
 	Snapped []Snap
 	Dropped []Drop
 	Folded  []Fold
+	Skipped []Skip
 }
 
 // BuildPlan verifies each finding's anchor against the commentable set, in input
@@ -88,6 +110,7 @@ func BuildPlan(in *Input, cs *CommentSet, opts Options) *Plan {
 		Snapped: []Snap{},
 		Dropped: []Drop{},
 		Folded:  []Fold{},
+		Skipped: []Skip{},
 	}
 	var folded []Finding
 
@@ -129,6 +152,40 @@ func BuildPlan(in *Input, cs *CommentSet, opts Options) *Plan {
 	return p
 }
 
+// SkipExisting drops every built comment that already exists on the PR — an exact
+// match on anchor (path, side, line, start_line) and body — recording each under
+// Skipped. It is the idempotency guard: a retried run posts only genuinely new
+// comments instead of double-posting after a timeout. The body compared is the
+// built comment's, so a snapped comment's "(re: line N)" prefix is part of its
+// identity. Existing comments that match nothing are ignored (they may be other
+// reviewers'); a nil/empty set is a no-op, so a first post is never touched.
+func (p *Plan) SkipExisting(existing []ExistingComment) {
+	if len(existing) == 0 || len(p.Review.Comments) == 0 {
+		return
+	}
+	seen := make(map[string]struct{}, len(existing))
+	for _, e := range existing {
+		seen[commentKey(e.Path, e.Side, e.Line, e.StartLine, e.Body)] = struct{}{}
+	}
+	kept := make([]Comment, 0, len(p.Review.Comments))
+	for _, c := range p.Review.Comments {
+		if _, dup := seen[commentKey(c.Path, c.Side, c.Line, c.StartLine, c.Body)]; dup {
+			p.Skipped = append(p.Skipped, Skip{Path: c.Path, Line: c.Line, StartLine: c.StartLine})
+			continue
+		}
+		kept = append(kept, c)
+	}
+	p.Review.Comments = kept
+}
+
+// commentKey is the identity of a posted comment for the idempotency guard: its
+// anchor and exact body, joined on a NUL that cannot appear in a path or a side.
+func commentKey(path, side string, line, startLine int, body string) string {
+	return strings.Join([]string{
+		path, side, strconv.Itoa(line), strconv.Itoa(startLine), body,
+	}, "\x00")
+}
+
 // Report is the machine-readable account printed to stdout: how many comments
 // were posted, and what happened to every finding that was not posted as-is.
 type Report struct {
@@ -136,6 +193,7 @@ type Report struct {
 	Snapped   []Snap  `json:"snapped"`
 	Dropped   []Drop  `json:"dropped"`
 	Folded    []Fold  `json:"folded"`
+	Skipped   []Skip  `json:"skipped"`
 	ReviewURL *string `json:"review_url"`
 }
 
@@ -148,6 +206,7 @@ func (p *Plan) Report(reviewURL *string) Report {
 		Snapped:   p.Snapped,
 		Dropped:   p.Dropped,
 		Folded:    p.Folded,
+		Skipped:   p.Skipped,
 		ReviewURL: reviewURL,
 	}
 }

@@ -23,7 +23,7 @@ within a bounded window or folded into the review body — so GitHub's
 $ cat findings.json | revpost owner/repo#123 --event COMMENT
 {"posted":6,"snapped":[{"path":"src/a.go","from":88,"to":91}],
  "dropped":[{"path":"src/b.go","line":10,"reason":"line not in diff"}],
- "folded":[],"review_url":"https://github.com/…#pullrequestreview-…"}
+ "folded":[],"skipped":[],"review_url":"https://github.com/…#pullrequestreview-…"}
 
 $ cat findings.json | revpost owner/repo#123 --dry-run              # same report, no post
 $ cat findings.json | revpost owner/repo#123 --snap within:3 --fold-dropped
@@ -98,6 +98,16 @@ For every finding, revpost checks its anchor against the set of commentable
 
 Everything that survives is posted in **one** review request.
 
+### Idempotency
+
+Agents retry after timeouts, so before posting revpost fetches the PR's existing
+inline comments and **skips any it would post that already exists** — an exact
+match on anchor (`path`, `side`, `line`, `start_line`) and body. Skipped comments
+are listed under `skipped`, and a re-run whose comments are all already posted
+does nothing and exits `1` (a clean no-op) rather than double-posting. A first
+post skips nothing, so its behavior is unchanged. `--dry-run` reports what would
+be skipped without posting.
+
 ### Flags
 
 | Flag | Meaning |
@@ -113,7 +123,7 @@ Everything that survives is posted in **one** review request.
 | Code | Meaning |
 |---|---|
 | `0` | Review posted (or a dry-run that would post). |
-| `1` | Soft miss, no review posted — either an **empty result** (nothing commentable, nothing folded, and no summary body; report on stdout, clean stderr) **or the target repo/PR was not found** (gh 404/410; JSON error envelope on stderr, no report). |
+| `1` | Soft miss, no review posted — either an **empty result** (nothing commentable or folded and no summary body, **or** every comment was already on the PR; report on stdout, clean stderr) **or the target repo/PR was not found** (gh 404/410; JSON error envelope on stderr, no report). |
 | `2` | Bad usage / validation — fix the args or input, do not retry. |
 | `3+` | Internal / IO error (including gh failures other than 404/410/422). |
 
@@ -123,10 +133,9 @@ whole (exit 2) — revpost never posts a partial review from broken input.
 
 ## Scope
 
-Single-line comments, **multi-line ranges / suggestion blocks**, and **reviewdog
-rdjson/rdjsonl input** (`--format`) are supported. Not yet (rejected loudly, never
-silently downgraded): an **idempotency guard** for retries. See
-[docs/design.md](docs/design.md).
+Single-line comments, **multi-line ranges / suggestion blocks**, **reviewdog
+rdjson/rdjsonl input** (`--format`), and an **idempotency guard** (skip comments
+already on the PR) are supported. See [docs/design.md](docs/design.md).
 
 ## Install
 
