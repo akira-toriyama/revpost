@@ -25,6 +25,10 @@ const patchNetAdd = "@@ -5,3 +5,4 @@\n ctx5\n-del6\n+add_a\n+add_b\n ctx7\n"
 //	 ctx8     old8 / new7
 const patchNetDel = "@@ -5,4 +5,3 @@\n ctx5\n-del6\n-del7\n+add_a\n ctx8\n"
 
+// Two hunks in one file give a gap in the RIGHT set: {1,2,3} (hunk 1) and
+// {9,10,11} (hunk 2). A range straddling the gap spans two hunks — invalid.
+const patchTwoHunks = "@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n@@ -20,3 +9,3 @@\n x\n-y\n+Y\n z\n"
+
 func TestBuildCommentSetSides(t *testing.T) {
 	cs := BuildCommentSet([]File{{Path: "add.go", Patch: patchNetAdd}})
 
@@ -111,6 +115,29 @@ func TestNearest(t *testing.T) {
 	// A RIGHT miss must never snap to a LEFT line.
 	if _, ok := cs.Nearest("absent.go", 5, SideRight, 5); ok {
 		t.Error("Nearest on an absent path must not match")
+	}
+}
+
+// A multi-line range is valid only when both endpoints share a hunk. hunkID maps
+// each commentable line to its 1-based hunk index, so endpoints in the same hunk
+// match and endpoints across the gap do not.
+func TestHunkIDGroupsByHunk(t *testing.T) {
+	cs := BuildCommentSet([]File{{Path: "g", Patch: patchTwoHunks}}) // RIGHT {1,2,3}|{9,10,11}
+
+	h1, ok1 := cs.hunkID("g", 1, SideRight)
+	h3, ok3 := cs.hunkID("g", 3, SideRight)
+	h9, ok9 := cs.hunkID("g", 9, SideRight)
+	if !ok1 || !ok3 || !ok9 {
+		t.Fatalf("lines 1, 3, 9 should all be commentable: %v %v %v", ok1, ok3, ok9)
+	}
+	if h1 != h3 {
+		t.Errorf("lines 1 and 3 share a hunk; got ids %d and %d", h1, h3)
+	}
+	if h3 == h9 {
+		t.Errorf("lines 3 and 9 are in different hunks; both got id %d", h3)
+	}
+	if _, ok := cs.hunkID("g", 5, SideRight); ok {
+		t.Error("line 5 falls in the gap between hunks; must not be commentable")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -48,6 +49,7 @@ type reportJSON struct {
 	Dropped []struct {
 		Path, Reason string
 		Line         int
+		StartLine    int `json:"start_line"`
 	} `json:"dropped"`
 	Folded []struct {
 		Path string
@@ -152,6 +154,35 @@ func TestPostsAndReportsURL(t *testing.T) {
 	}
 }
 
+// End to end: a multi-line range (both endpoints commentable, same hunk) carrying
+// a GitHub suggestion block posts with start_line/start_side, and the ``` block
+// survives verbatim in the comment body.
+func TestPostsMultiLineRangeWithSuggestion(t *testing.T) {
+	svc := addGoSvc()
+	svc.url = "u"
+	wantBody := "```suggestion\nfixed_a\nfixed_b\n```"
+	// Range 5..8 on add.go (RIGHT {5,6,7,8}, one hunk).
+	stdin := `{"findings":[{"path":"add.go","line":8,"start_line":5,"body":` + strconv.Quote(wantBody) + `}]}`
+
+	out, _, code := run(t, svc, stdin, "o/r#7")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if svc.postCalls != 1 {
+		t.Fatalf("post calls = %d, want 1", svc.postCalls)
+	}
+	c := svc.posted.Comments[0]
+	if c.StartLine != 5 || c.Line != 8 || c.StartSide != core.SideRight {
+		t.Errorf("posted range = %+v, want start 5 / line 8 / start_side RIGHT", c)
+	}
+	if c.Body != wantBody {
+		t.Errorf("suggestion block must pass through verbatim:\n got %q\nwant %q", c.Body, wantBody)
+	}
+	if r := decodeReport(t, out); r.Posted != 1 {
+		t.Errorf("posted = %d, want 1", r.Posted)
+	}
+}
+
 func TestEmptyResultExitsOneWithoutPosting(t *testing.T) {
 	svc := addGoSvc()
 	out, errStr, code := run(t, svc, `{"findings":[{"path":"add.go","line":999,"body":"x"}]}`, "o/r#7")
@@ -216,7 +247,7 @@ func TestExitCodesForBadInputs(t *testing.T) {
 	}{
 		{"bad target", addGoSvc(), `[]`, []string{"not-a-target"}, int(core.CodeValidation)},
 		{"malformed stdin", addGoSvc(), `garbage`, []string{"o/r#7"}, int(core.CodeValidation)},
-		{"range in input", addGoSvc(), `[{"path":"add.go","line":6,"body":"x","start_line":3}]`, []string{"o/r#7"}, int(core.CodeValidation)},
+		{"malformed range", addGoSvc(), `[{"path":"add.go","line":6,"body":"x","start_line":9}]`, []string{"o/r#7"}, int(core.CodeValidation)},
 		{"bad snap flag", addGoSvc(), `[]`, []string{"o/r#7", "--snap", "sideways"}, int(core.CodeValidation)},
 		{"bad event", addGoSvc(), `[]`, []string{"o/r#7", "--event", "PENDING"}, int(core.CodeValidation)},
 		{"too many args", addGoSvc(), `[]`, []string{"o/r#7", "o/r#8"}, int(core.CodeValidation)},

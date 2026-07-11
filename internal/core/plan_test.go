@@ -106,6 +106,69 @@ func TestBuildPlanFoldedMultilineBodyStaysInBullet(t *testing.T) {
 	}
 }
 
+// A range whose endpoints are both commentable and in the same hunk is posted
+// with start_line/start_side alongside line/side.
+func TestBuildPlanKeepsCommentableRange(t *testing.T) {
+	in := input("", Finding{Path: "add.go", Line: 8, Body: "range bug", Side: SideRight, StartLine: 5})
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT"})
+
+	if len(p.Review.Comments) != 1 {
+		t.Fatalf("Comments = %d, want 1", len(p.Review.Comments))
+	}
+	c := p.Review.Comments[0]
+	if c.StartLine != 5 || c.Line != 8 || c.Side != SideRight || c.StartSide != SideRight {
+		t.Errorf("range comment = %+v, want start 5 / line 8 / RIGHT / start_side RIGHT", c)
+	}
+	if len(p.Dropped) != 0 {
+		t.Errorf("Dropped = %+v, want empty", p.Dropped)
+	}
+}
+
+// A range with an off-diff endpoint drops as a whole span and is NEVER snapped —
+// which endpoint should move is ambiguous — even with a wide snap window.
+func TestBuildPlanRangeNeverSnapsAndDrops(t *testing.T) {
+	in := input("", Finding{Path: "add.go", Line: 100, Body: "x", Side: SideRight, StartLine: 5})
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT", SnapWithin: 50})
+
+	if len(p.Review.Comments) != 0 {
+		t.Fatalf("Comments = %d, want 0 (a range must not snap)", len(p.Review.Comments))
+	}
+	if len(p.Snapped) != 0 {
+		t.Errorf("Snapped = %+v, want empty (ranges never snap)", p.Snapped)
+	}
+	if len(p.Dropped) != 1 || p.Dropped[0].StartLine != 5 || p.Dropped[0].Reason != "range end not in diff" {
+		t.Errorf("Dropped = %+v, want one {start 5, reason 'range end not in diff'}", p.Dropped)
+	}
+}
+
+// GitHub 422s a range whose endpoints straddle two hunks; revpost drops it with a
+// reason distinct from an endpoint that is simply off the diff.
+func TestBuildPlanRangeSpanningHunksDrops(t *testing.T) {
+	cs := BuildCommentSet([]File{{Path: "g", Patch: patchTwoHunks}}) // RIGHT {1,2,3}|{9,10,11}
+	in := input("", Finding{Path: "g", Line: 9, Body: "x", Side: SideRight, StartLine: 3})
+	p := BuildPlan(in, cs, Options{Event: "COMMENT"})
+
+	if len(p.Review.Comments) != 0 {
+		t.Fatalf("Comments = %d, want 0 (spans two hunks)", len(p.Review.Comments))
+	}
+	if len(p.Dropped) != 1 || p.Dropped[0].Reason != "range spans multiple hunks" {
+		t.Errorf("Dropped = %+v, want one reason 'range spans multiple hunks'", p.Dropped)
+	}
+}
+
+// A folded range shows its full span (path:start-end) in the review body.
+func TestBuildPlanRangeFoldedShowsSpan(t *testing.T) {
+	in := input("", Finding{Path: "add.go", Line: 100, Body: "orphan range", Side: SideRight, StartLine: 90})
+	p := BuildPlan(in, findingsCS(), Options{Event: "COMMENT", FoldDropped: true})
+
+	if len(p.Folded) != 1 || p.Folded[0].StartLine != 90 {
+		t.Errorf("Folded = %+v, want one with StartLine 90", p.Folded)
+	}
+	if !strings.Contains(p.Review.Body, "add.go:90-100") {
+		t.Errorf("folded body must show the span add.go:90-100; got:\n%s", p.Review.Body)
+	}
+}
+
 func TestBuildPlanSnapsWithinWindow(t *testing.T) {
 	// Line 10 is 2 away from the nearest commentable RIGHT line (8).
 	in := input("", Finding{Path: "add.go", Line: 10, Body: "x", Side: SideRight})
