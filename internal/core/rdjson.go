@@ -123,8 +123,8 @@ func (d rdDiagnostic) toRaw() rawFinding {
 // fix is never silently dropped, it just loses one-click apply. Empty text is
 // meaningful only as an aligned deletion — an empty plain fence says nothing,
 // so a degenerate suggestion renders nothing at all. A message that leaves a
-// code fence open would swallow the first block (a closing fence may not carry
-// an info string), so the dangling fence is closed before the blocks.
+// code fence or a line-initial <!-- comment open would swallow the blocks, so
+// the open construct is closed before them (see danglingCloser).
 func (d rdDiagnostic) appendSuggestions(body string) string {
 	blocks := make([]string, 0, len(d.Suggestions))
 	for _, s := range d.Suggestions {
@@ -139,7 +139,7 @@ func (d rdDiagnostic) appendSuggestions(body string) string {
 		return body
 	}
 	if body != "" {
-		if f := danglingFence(body); f != "" {
+		if f := danglingCloser(body); f != "" {
 			body += "\n" + f
 		}
 		blocks = append([]string{body}, blocks...)
@@ -164,18 +164,49 @@ func (d rdDiagnostic) aligned(s rdSuggestion) bool {
 	return sStart == lStart && sEnd == lEnd
 }
 
-// danglingFence returns the line that closes a code fence the text leaves open
-// — "" when every fence is closed. Fences are matched closely enough to
-// CommonMark for linter/agent-authored messages: a run of 3+ backticks or
-// tildes indented at most 3 spaces opens a fence, and only a bare run of the
-// same character at least as long closes it (an info string is allowed on the
-// opening fence only).
-func danglingFence(text string) string {
+// danglingCloser returns the line(s) that close whatever the text leaves open —
+// "" when nothing is open. Two CommonMark constructs would run past the end of
+// the message and swallow appended text, matched closely enough for
+// linter/agent-authored messages: a code fence (a run of 3+ backticks or tildes
+// indented at most 3 spaces; only a bare run of the same character at least as
+// long closes it — an info string is allowed on the opening fence only) and a
+// line-initial <!-- comment (an HTML block, type 2, that runs until a line
+// containing -->). The two suppress each other — inside a fence <!-- is literal
+// text, inside a comment a fence marker is comment prose. A comment dangles at
+// two layers: while the block is open a bare --> line joins it and lands in the
+// raw HTML stream, but a close-then-reopen line ("a --> <!--") ends the block
+// with a raw <!-- still unterminated, where an appended --> would be a
+// paragraph (escaped, unreachable) — only a fresh <!-- --> line carries a
+// literal terminator back into the HTML stream, and since HTML comments do not
+// nest, one terminator always suffices. Scope: flat messages only — a fence or
+// comment opened inside a list, blockquote, or other container is not tracked
+// (a column-0 closer could not close it anyway).
+func danglingCloser(text string) string {
 	var open byte
 	openLen := 0
+	comment := false  // a line-initial <!-- block is still open
+	htmlOpen := false // the block closed, but its line reopened a raw <!--
 	for _, line := range strings.Split(text, "\n") {
+		if comment {
+			if strings.Contains(line, "-->") {
+				comment = false
+				htmlOpen = strings.LastIndex(line, "<!--") > strings.LastIndex(line, "-->")
+			}
+			continue
+		}
 		rest := strings.TrimLeft(line, " ")
-		if len(line)-len(rest) > 3 || len(rest) < 3 || (rest[0] != '`' && rest[0] != '~') {
+		if len(line)-len(rest) > 3 || len(rest) < 3 {
+			continue
+		}
+		if openLen == 0 && strings.HasPrefix(rest, "<!--") {
+			if strings.Contains(rest, "-->") {
+				htmlOpen = strings.LastIndex(rest, "<!--") > strings.LastIndex(rest, "-->")
+			} else {
+				comment = true
+			}
+			continue
+		}
+		if rest[0] != '`' && rest[0] != '~' {
 			continue
 		}
 		c := rest[0]
@@ -190,10 +221,17 @@ func danglingFence(text string) string {
 			openLen = 0
 		}
 	}
-	if openLen == 0 {
-		return ""
+	if comment {
+		return "-->"
 	}
-	return strings.Repeat(string(open), openLen)
+	var closers []string
+	if openLen > 0 {
+		closers = append(closers, strings.Repeat(string(open), openLen))
+	}
+	if htmlOpen {
+		closers = append(closers, "<!-- -->")
+	}
+	return strings.Join(closers, "\n")
 }
 
 // fencedBlock renders text as a fenced code block with the given info string

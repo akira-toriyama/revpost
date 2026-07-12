@@ -354,6 +354,54 @@ func TestRDJSONDanglingMessageFenceIsClosedBeforeBlocks(t *testing.T) {
 	}
 }
 
+// A message whose line starts an unterminated <!-- comment swallows appended
+// blocks just like an open fence: a line-initial <!-- opens a CommonMark HTML
+// block (type 2) that runs until a line containing -->, or to the end of the
+// document — and GitHub strips comment content, so the blocks vanish with no
+// Apply button. The comment is closed before the blocks. Only a line-initial
+// <!-- opens the block (a mid-line one stays inline and is harmless), and the
+// two states suppress each other: a fence marker inside a comment is comment
+// prose, a <!-- inside a fence is literal text.
+func TestRDJSONDanglingMessageCommentIsClosedBeforeBlocks(t *testing.T) {
+	sugg := `,"suggestions":[{"range":{"start":{"line":5}},"text":"fixed"}]`
+	block := "```suggestion\nfixed\n```"
+	cases := []struct {
+		name, message, suggJSON, want string
+	}{
+		{"dangling comment", "bad:\n<!-- note", sugg, "bad:\n<!-- note\n-->\n\n" + block},
+		{"comment closed on same line", "<!-- ok -->\nbad:", sugg, "<!-- ok -->\nbad:\n\n" + block},
+		{"comment closed on later line", "<!--\nnote\n-->", sugg, "<!--\nnote\n-->\n\n" + block},
+		{"empty comment closes itself", "<!-->\nbad:", sugg, "<!-->\nbad:\n\n" + block},
+		{"mid-line comment stays inline", "bad: <!-- note", sugg, "bad: <!-- note\n\n" + block},
+		{"four-space indent is not a comment", "bad:\n    <!--", sugg, "bad:\n    <!--\n\n" + block},
+		{"fence inside comment is comment prose", "<!--\n```go\n-->", sugg, "<!--\n```go\n-->\n\n" + block},
+		{"comment inside fence is literal text", "```\n<!--\n```", sugg, "```\n<!--\n```\n\n" + block},
+		{"comment then dangling fence", "<!--\n-->\n```", sugg, "<!--\n-->\n```\n```\n\n" + block},
+		{"no blocks: dangling comment left alone", "bad:\n<!-- note", "", "bad:\n<!-- note"},
+		// A close-then-reopen on one line ends the markdown block but leaves a
+		// raw <!-- open at the HTML layer, where a bare --> line can no longer
+		// reach it (a paragraph escapes it) — only a fresh raw <!-- --> line
+		// carries a literal terminator into the HTML stream.
+		{"reopened after close on one line", "<!-- a --> <!--", sugg, "<!-- a --> <!--\n<!-- -->\n\n" + block},
+		{"reopened on the block's closing line", "<!--\nb --> <!--", sugg, "<!--\nb --> <!--\n<!-- -->\n\n" + block},
+		{"reopen terminated by a later comment line", "<!-- a --> <!--\n<!-- x -->", sugg, "<!-- a --> <!--\n<!-- x -->\n\n" + block},
+		{"reopen then dangling fence needs both closers", "<!-- a --> <!--\n```go", sugg, "<!-- a --> <!--\n```go\n```\n<!-- -->\n\n" + block},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := `{"diagnostics":[{"message":` + strconv.Quote(c.message) +
+				`,"location":{"path":"a.go","range":{"start":{"line":5}}}` + c.suggJSON + `}]}`
+			in, err := ParseRDJSON([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseRDJSON: %v", err)
+			}
+			if f := in.Findings[0]; f.Body != c.want {
+				t.Errorf("body =\n%q\nwant\n%q", f.Body, c.want)
+			}
+		})
+	}
+}
+
 // Suggestion text edge cases: a text carrying backtick fences needs a longer
 // outer fence to survive rendering; a trailing newline is not doubled; empty
 // text is a valid deletion suggestion (GitHub deletes the anchored lines).
