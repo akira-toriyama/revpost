@@ -223,6 +223,31 @@ func TestFormatRDJSONLPostsMappedFinding(t *testing.T) {
 	}
 }
 
+// End to end: an rdjsonl diagnostic carrying a line-aligned suggestion posts a
+// comment whose body ends in a GitHub ```suggestion block, so the reviewdog-
+// sourced fix is one-click-appliable.
+func TestFormatRDJSONLSuggestionPostsSuggestionBlock(t *testing.T) {
+	svc := addGoSvc() // add.go RIGHT commentable {5,6,7,8}
+	svc.url = "u"
+	stdin := `{"message":"use fixed","location":{"path":"add.go","range":{"start":{"line":6}}},` +
+		`"suggestions":[{"range":{"start":{"line":6}},"text":"fixed"}]}`
+
+	out, errStr, code := run(t, svc, stdin, "o/r#7", "--format", "rdjsonl")
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errStr)
+	}
+	c := svc.posted.Comments[0]
+	if want := "use fixed\n\n```suggestion\nfixed\n```"; c.Body != want {
+		t.Errorf("posted body =\n%q\nwant\n%q", c.Body, want)
+	}
+	if c.Line != 6 || c.StartLine != 0 {
+		t.Errorf("posted anchor = %+v, want single-line 6", c)
+	}
+	if r := decodeReport(t, out); r.Posted != 1 {
+		t.Errorf("posted = %d, want 1", r.Posted)
+	}
+}
+
 // An unknown --format is a usage error (exit 2) that fails before reading stdin;
 // stdout stays clean.
 func TestBadFormatIsUsageError(t *testing.T) {

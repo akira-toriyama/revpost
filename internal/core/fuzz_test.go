@@ -44,6 +44,9 @@ func FuzzParseRDJSON(f *testing.F) {
 	f.Add(`{"message":"m","location":{"path":"a.go","range":{"start":{"line":5},"end":{"line":8}}}}`)
 	f.Add("l1\nl2\n\n")
 	f.Add(`{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":1}}}}]}`)
+	f.Add(`{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[{"range":{"start":{"line":5}},"text":"x` + "```" + `y"}]}`)
+	f.Add(`{"diagnostics":[{"location":{"path":"a.go","range":{"start":{"line":2},"end":{"line":3}}},"suggestions":[{"range":{"start":{"line":2},"end":{"line":3,"column":4}},"text":""},{"text":"z"}]}]}`)
+	f.Add(`{"message":"x\n` + "```" + `","location":{"path":"a.go","range":{"start":{"line":1}}},"suggestions":[{"range":{"start":{"line":1}},"text":"y"},{"range":{"start":{"line":1},"end":{"line":0}},"text":"y2"}]}`)
 	f.Add(``)
 	f.Add(`{`)
 	f.Fuzz(func(t *testing.T, data string) {

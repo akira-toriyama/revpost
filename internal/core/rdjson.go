@@ -46,31 +46,63 @@ func ParseFindings(data []byte, format string) (*Input, error) {
 }
 
 // rdDiagnostic is the subset of reviewdog's rdjson Diagnostic revpost maps:
-// location.path, location.range (start/end line), and message. Everything else
-// (severity, source, code, suggestions) decodes away — carried metadata revpost
-// does not need. See https://github.com/reviewdog/reviewdog (rdjson/rdjsonl).
+// location.path, location.range (start/end line), message, and suggestions.
+// Everything else (severity, source, code) decodes away — carried metadata
+// revpost does not need. See https://github.com/reviewdog/reviewdog (rdjson).
 type rdDiagnostic struct {
 	Message  string `json:"message"`
 	Location struct {
-		Path  string `json:"path"`
-		Range *struct {
-			Start struct {
-				Line int `json:"line"`
-			} `json:"start"`
-			End struct {
-				Line int `json:"line"`
-			} `json:"end"`
-		} `json:"range"`
+		Path  string   `json:"path"`
+		Range *rdRange `json:"range"`
 	} `json:"location"`
+	Suggestions []rdSuggestion `json:"suggestions"`
+}
+
+// rdRange is a reviewdog text range. Lines are 1-based; column is 1-based with
+// 0 (or absent) meaning "no column" — a range without columns covers whole lines.
+type rdRange struct {
+	Start rdPosition `json:"start"`
+	End   rdPosition `json:"end"`
+}
+
+type rdPosition struct {
+	Line   int `json:"line"`
+	Column int `json:"column"`
+}
+
+// span normalizes the range to its 1-based line span: an absent end (or one
+// before the start) collapses to the start line.
+func (r rdRange) span() (start, end int) {
+	start, end = r.Start.Line, r.End.Line
+	if end < start {
+		end = start
+	}
+	return start, end
+}
+
+// wholeLines reports whether the range replaces whole lines only: no column on
+// either end. rdformat is linewise only when the columns are omitted (0/absent)
+// — an explicit column, even 1, is character-precise (reviewdog's own reporter
+// treats any column > 0 as a partial-line edit) — and GitHub suggestion blocks
+// can only replace whole lines, so a column-precise range disqualifies.
+func (r rdRange) wholeLines() bool {
+	return r.Start.Column == 0 && r.End.Column == 0
+}
+
+// rdSuggestion is a fix the diagnostic proposes: text that replaces range.
+type rdSuggestion struct {
+	Range *rdRange `json:"range"`
+	Text  string   `json:"text"`
 }
 
 // toRaw maps a diagnostic onto a rawFinding so it reuses the native validation
 // (path/line/body checks, range collapse). reviewdog diagnostics describe the new
 // file, so the side is always RIGHT. A range whose end line is past its start
 // becomes a multi-line finding (revpost anchors on the last line); a point
-// diagnostic or an end on the same line stays single-line.
+// diagnostic or an end on the same line stays single-line. Suggestions are
+// appended to the body as fenced blocks (see appendSuggestions).
 func (d rdDiagnostic) toRaw() rawFinding {
-	rf := rawFinding{Path: d.Location.Path, Body: d.Message, Side: SideRight}
+	rf := rawFinding{Path: d.Location.Path, Body: d.appendSuggestions(d.Message), Side: SideRight}
 	if r := d.Location.Range; r != nil {
 		rf.Line = r.Start.Line
 		if r.End.Line > r.Start.Line {
@@ -80,6 +112,111 @@ func (d rdDiagnostic) toRaw() rawFinding {
 		}
 	}
 	return rf
+}
+
+// appendSuggestions renders the diagnostic's suggestions under the message.
+// GitHub applies a suggestion block to exactly the comment's anchored lines, so
+// every suggestion that lines up with the anchor (whole lines, same span)
+// becomes a ```suggestion block — blocks in one comment share the anchor, so
+// they render as one-click alternatives and applying one outdates the rest. A
+// suggestion that cannot line up folds in as a plain fenced block: a proposed
+// fix is never silently dropped, it just loses one-click apply. Empty text is
+// meaningful only as an aligned deletion — an empty plain fence says nothing,
+// so a degenerate suggestion renders nothing at all. A message that leaves a
+// code fence open would swallow the first block (a closing fence may not carry
+// an info string), so the dangling fence is closed before the blocks.
+func (d rdDiagnostic) appendSuggestions(body string) string {
+	blocks := make([]string, 0, len(d.Suggestions))
+	for _, s := range d.Suggestions {
+		switch {
+		case d.aligned(s):
+			blocks = append(blocks, fencedBlock("suggestion", s.Text))
+		case s.Text != "":
+			blocks = append(blocks, fencedBlock("", s.Text))
+		}
+	}
+	if len(blocks) == 0 {
+		return body
+	}
+	if body != "" {
+		if f := danglingFence(body); f != "" {
+			body += "\n" + f
+		}
+		blocks = append([]string{body}, blocks...)
+	}
+	return strings.Join(blocks, "\n\n")
+}
+
+// aligned reports whether a suggestion replaces exactly the whole lines the
+// comment anchors, i.e. whether GitHub would apply it where the fix belongs. A
+// backwards range (end line before start) never qualifies — normalizing it
+// away could promote a multi-line replacement onto a single anchored line.
+func (d rdDiagnostic) aligned(s rdSuggestion) bool {
+	r := s.Range
+	if r == nil || d.Location.Range == nil || !r.wholeLines() {
+		return false
+	}
+	if r.End.Line != 0 && r.End.Line < r.Start.Line {
+		return false
+	}
+	sStart, sEnd := r.span()
+	lStart, lEnd := d.Location.Range.span()
+	return sStart == lStart && sEnd == lEnd
+}
+
+// danglingFence returns the line that closes a code fence the text leaves open
+// — "" when every fence is closed. Fences are matched closely enough to
+// CommonMark for linter/agent-authored messages: a run of 3+ backticks or
+// tildes indented at most 3 spaces opens a fence, and only a bare run of the
+// same character at least as long closes it (an info string is allowed on the
+// opening fence only).
+func danglingFence(text string) string {
+	var open byte
+	openLen := 0
+	for _, line := range strings.Split(text, "\n") {
+		rest := strings.TrimLeft(line, " ")
+		if len(line)-len(rest) > 3 || len(rest) < 3 || (rest[0] != '`' && rest[0] != '~') {
+			continue
+		}
+		c := rest[0]
+		run := len(rest) - len(strings.TrimLeft(rest, string(c)))
+		if run < 3 {
+			continue
+		}
+		switch {
+		case openLen == 0:
+			open, openLen = c, run
+		case c == open && run >= openLen && strings.TrimSpace(rest[run:]) == "":
+			openLen = 0
+		}
+	}
+	if openLen == 0 {
+		return ""
+	}
+	return strings.Repeat(string(open), openLen)
+}
+
+// fencedBlock renders text as a fenced code block with the given info string
+// ("suggestion" or none). The fence grows past the longest backtick run in the
+// text so an embedded ``` cannot terminate the block early; empty text renders
+// as an empty block (for a suggestion, that is a deletion), and a trailing
+// newline is not doubled.
+func fencedBlock(info, text string) string {
+	size, run := 3, 0
+	for _, r := range text {
+		if r != '`' {
+			run = 0
+			continue
+		}
+		if run++; run >= size {
+			size = run + 1
+		}
+	}
+	if text != "" && !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	fence := strings.Repeat("`", size)
+	return fence + info + "\n" + text + fence
 }
 
 // ParseRDJSONL decodes newline-delimited rdjson diagnostics (one per line),

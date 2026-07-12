@@ -25,8 +25,13 @@ review with inline comments posts with the top-level body omitted.
   bodies pass through verbatim.
 - reviewdog rdjson/rdjsonl input (design note 4) — `--format rdjson|rdjsonl` maps
   each diagnostic (`location.path`/`location.range`/`message`) onto a finding and
-  reuses the native validation; the native format stays the default. Suggestions
-  carried by a diagnostic are not yet translated into ` ```suggestion ` blocks.
+  reuses the native validation; the native format stays the default. A
+  diagnostic's suggestions are translated: each one aligned with the anchor
+  (whole lines — rdformat is line-wise only when columns are omitted — and the
+  same span as `location.range`) becomes a ` ```suggestion ` block; blocks
+  share the comment's anchor, so alternatives render one-click each.
+  Column-precise or differently-spanned suggestions fold in as plain fenced
+  blocks so a proposed fix is never silently dropped.
 - idempotency guard (design note 6) — before posting, existing inline comments are
   fetched and any comment revpost would post that already exists (exact anchor +
   body match) is skipped and reported under `skipped`; an all-duplicate re-run is

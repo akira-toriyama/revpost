@@ -75,9 +75,19 @@ $ reviewdog -f=golint -diff="git diff" -filter-mode=nofilter | \
 Each diagnostic maps to a finding: `location.path` → `path`, `message` → `body`,
 and the `location.range` lines → the anchor (a range whose `end.line` is past its
 `start.line` becomes a multi-line comment; otherwise it is single-line). The side
-is always `RIGHT` (diagnostics describe the new file). Everything else the format
-carries (`severity`, `source`, `code`, `suggestions`) is ignored. The native
-format stays the default; this is purely additive.
+is always `RIGHT` (diagnostics describe the new file).
+
+A diagnostic's `suggestions` are appended to the comment body. Every suggestion
+that lines up with the anchor — whole lines only (no columns on either end;
+rdformat is line-wise only when columns are omitted) and the same line span as
+`location.range` — becomes a GitHub <code>```suggestion</code> block, so the
+fix is one-click-appliable. Blocks in one comment share the anchored lines, so
+multiple aligned suggestions render as alternatives — applying one outdates the
+rest. A suggestion that cannot line up (column-precise or a different span)
+folds in as a plain fenced block instead — a proposed fix is never silently
+dropped, it just loses one-click apply. Everything else the format carries
+(`severity`, `source`, `code`) is ignored. The native format stays the default;
+this is purely additive.
 
 ### What happens to each finding
 
@@ -134,8 +144,9 @@ whole (exit 2) — revpost never posts a partial review from broken input.
 ## Scope
 
 Single-line comments, **multi-line ranges / suggestion blocks**, **reviewdog
-rdjson/rdjsonl input** (`--format`), and an **idempotency guard** (skip comments
-already on the PR) are supported. See [docs/design.md](docs/design.md).
+rdjson/rdjsonl input** (`--format`, incl. translating diagnostic suggestions
+into <code>```suggestion</code> blocks), and an **idempotency guard** (skip
+comments already on the PR) are supported. See [docs/design.md](docs/design.md).
 
 ## Install
 

@@ -1,6 +1,8 @@
 package core
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -172,6 +174,235 @@ func TestParseRDJSONEmptyDiagnosticsIsValid(t *testing.T) {
 	}
 	if len(in.Findings) != 0 {
 		t.Errorf("Findings = %d, want 0", len(in.Findings))
+	}
+}
+
+// A diagnostic suggestion whose range replaces exactly the anchored whole lines
+// becomes a GitHub ```suggestion block appended to the message, so the fix is
+// one-click-appliable.
+func TestRDJSONSuggestionBecomesSuggestionBlock(t *testing.T) {
+	src := `{"diagnostics":[{"message":"use fixed","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[{"range":{"start":{"line":5}},"text":"fixed"}]}]}`
+	in, err := ParseRDJSON([]byte(src))
+	if err != nil {
+		t.Fatalf("ParseRDJSON: %v", err)
+	}
+	f := in.Findings[0]
+	want := "use fixed\n\n```suggestion\nfixed\n```"
+	if f.Body != want {
+		t.Errorf("body =\n%q\nwant\n%q", f.Body, want)
+	}
+	if f.Line != 5 || f.StartLine != 0 {
+		t.Errorf("anchor = %+v, want single-line 5", f)
+	}
+}
+
+// A multi-line suggestion whose span equals the diagnostic's range keeps the
+// multi-line anchor, so GitHub applies the block to all the anchored lines.
+func TestRDJSONSuggestionOnMultiLineRange(t *testing.T) {
+	src := `{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":5},"end":{"line":8}}},"suggestions":[{"range":{"start":{"line":5},"end":{"line":8}},"text":"x\ny"}]}]}`
+	in, err := ParseRDJSON([]byte(src))
+	if err != nil {
+		t.Fatalf("ParseRDJSON: %v", err)
+	}
+	f := in.Findings[0]
+	if f.StartLine != 5 || f.Line != 8 {
+		t.Errorf("anchor = %+v, want range 5..8", f)
+	}
+	if want := "m\n\n```suggestion\nx\ny\n```"; f.Body != want {
+		t.Errorf("body =\n%q\nwant\n%q", f.Body, want)
+	}
+}
+
+// A suggestion that cannot be applied as a GitHub block — column-precise
+// (rdformat is linewise only when columns are omitted, and an explicit column,
+// even 1, is character-precise; GitHub suggestions replace whole lines only), a
+// span that differs from the anchor, a malformed backwards range, or no range at
+// all — is folded into the body as a plain fenced block instead, so the
+// proposed fix is never silently dropped.
+func TestRDJSONUnalignedSuggestionFoldsAsPlainFence(t *testing.T) {
+	cases := map[string]string{
+		"column-precise start":    `{"range":{"start":{"line":5,"column":3},"end":{"line":5}},"text":"fixed"}`,
+		"explicit start column 1": `{"range":{"start":{"line":5,"column":1}},"text":"fixed"}`,
+		"column-precise end":      `{"range":{"start":{"line":5},"end":{"line":5,"column":9}},"text":"fixed"}`,
+		"span mismatch":           `{"range":{"start":{"line":5},"end":{"line":6}},"text":"fixed"}`,
+		"reversed range":          `{"range":{"start":{"line":5},"end":{"line":3}},"text":"fixed"}`,
+		"no range":                `{"text":"fixed"}`,
+	}
+	for name, sugg := range cases {
+		t.Run(name, func(t *testing.T) {
+			src := `{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[` + sugg + `]}]}`
+			in, err := ParseRDJSON([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseRDJSON: %v", err)
+			}
+			f := in.Findings[0]
+			if want := "m\n\n```\nfixed\n```"; f.Body != want {
+				t.Errorf("body =\n%q\nwant\n%q", f.Body, want)
+			}
+		})
+	}
+}
+
+// Every aligned suggestion becomes its own ```suggestion block — blocks in one
+// comment share the anchor, so GitHub offers them as one-click alternatives
+// (applying one outdates the rest). Unaligned suggestions fold as plain fences,
+// in order.
+func TestRDJSONEveryAlignedSuggestionBecomesBlock(t *testing.T) {
+	aligned := `{"range":{"start":{"line":5}},"text":"%s"}`
+	colPrecise := `{"range":{"start":{"line":5,"column":3},"end":{"line":5,"column":7}},"text":"%s"}`
+
+	t.Run("two aligned: two blocks", func(t *testing.T) {
+		src := `{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[` +
+			fmt.Sprintf(aligned, "one") + `,` + fmt.Sprintf(aligned, "two") + `]}]}`
+		in, err := ParseRDJSON([]byte(src))
+		if err != nil {
+			t.Fatalf("ParseRDJSON: %v", err)
+		}
+		want := "m\n\n```suggestion\none\n```\n\n```suggestion\ntwo\n```"
+		if f := in.Findings[0]; f.Body != want {
+			t.Errorf("body =\n%q\nwant\n%q", f.Body, want)
+		}
+	})
+	t.Run("first unaligned: folds, second still a block", func(t *testing.T) {
+		src := `{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[` +
+			fmt.Sprintf(colPrecise, "one") + `,` + fmt.Sprintf(aligned, "two") + `]}]}`
+		in, err := ParseRDJSON([]byte(src))
+		if err != nil {
+			t.Fatalf("ParseRDJSON: %v", err)
+		}
+		want := "m\n\n```\none\n```\n\n```suggestion\ntwo\n```"
+		if f := in.Findings[0]; f.Body != want {
+			t.Errorf("body =\n%q\nwant\n%q", f.Body, want)
+		}
+	})
+}
+
+// A degenerate suggestion — empty text without alignment (including a null
+// array element, which decodes to the zero suggestion) — renders nothing:
+// empty text is meaningful only as an aligned deletion, and an empty plain
+// fence is junk. With an empty message too, nothing remains and the diagnostic
+// is rejected exactly like a message-less diagnostic without suggestions.
+func TestRDJSONDegenerateSuggestionsAreSkipped(t *testing.T) {
+	for name, sugg := range map[string]string{
+		"null suggestion":      `null`,
+		"empty unaligned text": `{"text":""}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			src := `{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[` + sugg + `]}]}`
+			in, err := ParseRDJSON([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseRDJSON: %v", err)
+			}
+			if f := in.Findings[0]; f.Body != "m" {
+				t.Errorf("body = %q, want %q (degenerate suggestion must render nothing)", f.Body, "m")
+			}
+		})
+	}
+
+	t.Run("empty message + degenerate suggestion is rejected", func(t *testing.T) {
+		src := `{"diagnostics":[{"location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[{"text":""}]}]}`
+		_, err := ParseRDJSON([]byte(src))
+		if err == nil {
+			t.Fatal("want a validation error for a contentless diagnostic")
+		}
+		if ExitCode(err) != int(CodeValidation) {
+			t.Errorf("exit = %d, want validation", ExitCode(err))
+		}
+	})
+	t.Run("empty message + folded suggestion is still valid", func(t *testing.T) {
+		src := `{"diagnostics":[{"location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[{"text":"fixed"}]}]}`
+		in, err := ParseRDJSON([]byte(src))
+		if err != nil {
+			t.Fatalf("ParseRDJSON: %v", err)
+		}
+		if want := "```\nfixed\n```"; in.Findings[0].Body != want {
+			t.Errorf("body =\n%q\nwant\n%q", in.Findings[0].Body, want)
+		}
+	})
+}
+
+// A message that leaves a code fence open would swallow the appended blocks (a
+// CommonMark closing fence may not carry an info string, so "```suggestion"
+// cannot close it) — the dangling fence is closed before the first block. A
+// balanced message is left alone, and so is a dangling one with no blocks to
+// protect.
+func TestRDJSONDanglingMessageFenceIsClosedBeforeBlocks(t *testing.T) {
+	sugg := `,"suggestions":[{"range":{"start":{"line":5}},"text":"fixed"}]`
+	block := "```suggestion\nfixed\n```"
+	cases := []struct {
+		name, message, suggJSON, want string
+	}{
+		{"dangling backtick fence", "bad:\n```", sugg, "bad:\n```\n```\n\n" + block},
+		{"dangling tilde fence", "bad:\n~~~", sugg, "bad:\n~~~\n~~~\n\n" + block},
+		{"longer dangling fence", "bad:\n`````", sugg, "bad:\n`````\n`````\n\n" + block},
+		{"info-string line cannot close", "bad:\n```go\nx\n```go", sugg, "bad:\n```go\nx\n```go\n```\n\n" + block},
+		{"balanced fence left alone", "ok:\n```go\nx\n```", sugg, "ok:\n```go\nx\n```\n\n" + block},
+		{"no blocks: dangling left alone", "bad:\n```", "", "bad:\n```"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := `{"diagnostics":[{"message":` + strconv.Quote(c.message) +
+				`,"location":{"path":"a.go","range":{"start":{"line":5}}}` + c.suggJSON + `}]}`
+			in, err := ParseRDJSON([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseRDJSON: %v", err)
+			}
+			if f := in.Findings[0]; f.Body != c.want {
+				t.Errorf("body =\n%q\nwant\n%q", f.Body, c.want)
+			}
+		})
+	}
+}
+
+// Suggestion text edge cases: a text carrying backtick fences needs a longer
+// outer fence to survive rendering; a trailing newline is not doubled; empty
+// text is a valid deletion suggestion (GitHub deletes the anchored lines).
+func TestRDJSONSuggestionTextRendering(t *testing.T) {
+	cases := []struct {
+		name, text, want string
+	}{
+		{"backticks in text", "```suggestion\nnested\n```", "m\n\n````suggestion\n```suggestion\nnested\n```\n````"},
+		{"four-run cascades to five", "````", "m\n\n`````suggestion\n````\n`````"},
+		{"trailing newline not doubled", "fixed\n", "m\n\n```suggestion\nfixed\n```"},
+		{"empty text is a deletion", "", "m\n\n```suggestion\n```"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := `{"diagnostics":[{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[{"range":{"start":{"line":5}},"text":` + strconv.Quote(c.text) + `}]}]}`
+			in, err := ParseRDJSON([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseRDJSON: %v", err)
+			}
+			if f := in.Findings[0]; f.Body != c.want {
+				t.Errorf("body =\n%q\nwant\n%q", f.Body, c.want)
+			}
+		})
+	}
+}
+
+// The rdjsonl path shares the same mapping, so a diagnostic line with an aligned
+// suggestion translates identically.
+func TestParseRDJSONLTranslatesSuggestion(t *testing.T) {
+	line := `{"message":"m","location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[{"range":{"start":{"line":5}},"text":"fixed"}]}`
+	in, err := ParseRDJSONL([]byte(line))
+	if err != nil {
+		t.Fatalf("ParseRDJSONL: %v", err)
+	}
+	if want := "m\n\n```suggestion\nfixed\n```"; in.Findings[0].Body != want {
+		t.Errorf("body =\n%q\nwant\n%q", in.Findings[0].Body, want)
+	}
+}
+
+// A diagnostic with an empty message but an aligned suggestion is still a valid
+// finding — the block alone is the body (a suggestion-only review comment).
+func TestRDJSONSuggestionOnlyBodyIsValid(t *testing.T) {
+	src := `{"diagnostics":[{"location":{"path":"a.go","range":{"start":{"line":5}}},"suggestions":[{"range":{"start":{"line":5}},"text":"fixed"}]}]}`
+	in, err := ParseRDJSON([]byte(src))
+	if err != nil {
+		t.Fatalf("ParseRDJSON: %v", err)
+	}
+	if want := "```suggestion\nfixed\n```"; in.Findings[0].Body != want {
+		t.Errorf("body =\n%q\nwant\n%q", in.Findings[0].Body, want)
 	}
 }
 
