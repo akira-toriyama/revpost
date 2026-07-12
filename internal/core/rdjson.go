@@ -179,29 +179,22 @@ func (d rdDiagnostic) aligned(s rdSuggestion) bool {
 // with a raw <!-- still unterminated, where an appended --> would be a
 // paragraph (escaped, unreachable) — only a fresh <!-- --> line carries a
 // literal terminator back into the HTML stream, and since HTML comments do not
-// nest, one terminator always suffices. Container nesting is handled by
-// asymmetry, not by parsing containers (all shapes verified against GitHub's
-// real renderer): a fence opened on an indented line after a container-marker
-// line gets NO closer — a column-0 closer cannot close it (fenced code has no
-// lazy continuation), it would end the list and open a new fence that swallows
-// the blocks, while with no closer the blocks' own fence line ends the item
-// and renders fine — whereas an indented fence with no open container in sight
-// is a real top-level fence and keeps its closer (a blank line followed by a
-// column-0 non-marker line ends the container context). A raw comment opened behind a
-// container marker or on an HTML-tag line also dangles at the HTML layer, so
-// it takes the <!-- --> closer; that closer is a complete comment and renders
-// as nothing even when a later container line already terminated the dangle,
-// so over-appending is harmless. Fences and comments opened deeper than one
-// marker stack, or a fence on the marker line itself, stay untracked — for a
-// container fence no closer is the correct output anyway.
+// nest, one terminator always suffices. Container nesting needs no parsing: the
+// fence closer is emitted at the opening fence's own indentation, so it shares
+// the opener's container context and closes exactly that fence — top-level,
+// inside a list item, or below an item's content indent (where GFM makes the
+// fence top-level again) — all rendering correctly on GitHub. A column-0 closer
+// could not: for a fence nested in a list item it opens a new top-level fence
+// that swallows the blocks. A raw comment opened behind a container marker
+// (- / 1. / >) or on an HTML-tag line dangles at the HTML layer, so it takes
+// the <!-- --> closer; being a complete comment that renders as nothing, an
+// unneeded one is harmless. A fence or comment on a marker line itself stays
+// untracked — it renders fine without a closer.
 func danglingCloser(text string) string {
 	var open byte
-	openLen := 0
-	suppressed := false   // the open fence is container-nested: emit no closer
-	sawContainer := false // a container-marker line has been seen and not closed
-	blank := false        // the previous line was blank
-	comment := false      // a line-initial <!-- block is still open
-	htmlOpen := false     // a raw <!-- dangles where only <!-- --> can reach it
+	openLen, openIndent := 0, 0
+	comment := false  // a line-initial <!-- block is still open
+	htmlOpen := false // a raw <!-- dangles where only <!-- --> can reach it
 	for _, line := range strings.Split(text, "\n") {
 		if comment {
 			if strings.Contains(line, "-->") {
@@ -211,13 +204,8 @@ func danglingCloser(text string) string {
 			continue
 		}
 		rest := strings.TrimLeft(line, " ")
-		if rest == "" {
-			blank = true
-			continue
-		}
-		blankBefore := blank
-		blank = false
-		if len(line)-len(rest) > 3 {
+		indent := len(line) - len(rest)
+		if indent > 3 || rest == "" {
 			continue
 		}
 		if openLen == 0 && strings.HasPrefix(rest, "<!--") {
@@ -229,8 +217,9 @@ func danglingCloser(text string) string {
 			continue
 		}
 		if openLen == 0 {
+			// A comment opened behind a container marker or on an HTML-tag
+			// line dangles at the HTML layer; note it, then leave the line.
 			if s, ok := containerContent(rest); ok {
-				sawContainer = true
 				if strings.HasPrefix(s, "<!--") {
 					htmlOpen = strings.LastIndex(s, "<!--") > strings.LastIndex(s, "-->")
 				}
@@ -241,12 +230,6 @@ func danglingCloser(text string) string {
 					htmlOpen = strings.LastIndex(rest, "<!--") > strings.LastIndex(rest, "-->")
 				}
 				continue
-			}
-			// A column-0 line after a blank sits outside any container (a
-			// continuation needs indent, a lazy one needs no blank between),
-			// so the container context is over.
-			if blankBefore && len(line) == len(rest) {
-				sawContainer = false
 			}
 		}
 		if rest[0] != '`' && rest[0] != '~' {
@@ -265,8 +248,7 @@ func danglingCloser(text string) string {
 			if c == '`' && strings.Contains(rest[run:], "`") {
 				continue
 			}
-			open, openLen = c, run
-			suppressed = sawContainer && len(line) > len(rest)
+			open, openLen, openIndent = c, run, indent
 		case c == open && run >= openLen && strings.TrimSpace(rest[run:]) == "":
 			openLen = 0
 		}
@@ -275,8 +257,8 @@ func danglingCloser(text string) string {
 		return "-->"
 	}
 	var closers []string
-	if openLen > 0 && !suppressed {
-		closers = append(closers, strings.Repeat(string(open), openLen))
+	if openLen > 0 {
+		closers = append(closers, strings.Repeat(" ", openIndent)+strings.Repeat(string(open), openLen))
 	}
 	if htmlOpen {
 		closers = append(closers, "<!-- -->")
@@ -288,7 +270,8 @@ func danglingCloser(text string) string {
 // of blockquote '>'s, then at most one list bullet (-, *, +) or ordered
 // marker (1-9 digits then . or )), bullets and ordered markers only when
 // followed by a space — returning the remaining content and whether any
-// marker was stripped.
+// marker was stripped. Used only to spot a <!-- opened behind a marker: a
+// dangling fence needs no container detection (its closer mirrors its indent).
 func containerContent(rest string) (string, bool) {
 	s, stripped := rest, false
 	for strings.HasPrefix(s, ">") {
