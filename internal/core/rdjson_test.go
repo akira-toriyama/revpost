@@ -408,6 +408,61 @@ func TestRDJSONDanglingMessageCommentIsClosedBeforeBlocks(t *testing.T) {
 	}
 }
 
+// Container-nested opens need different closers than top-level ones — all
+// behaviors below were verified against GitHub's real renderer (gh api
+// /markdown). A fence opened at a list item's content indent must get NO
+// closer: a column-0 ``` cannot close it (fenced code has no lazy
+// continuation) — it ends the list and opens a new top-level fence that
+// swallows the blocks, while with no closer the blocks' own fence line ends
+// the item and renders correctly. The suppression is keyed on having seen a
+// container-marker line before the indented opener; an indented fence with no
+// container in sight is a real top-level fence and keeps its closer. A raw
+// comment opened behind a container marker (- / 1. / >) or on an HTML-tag
+// line dangles at the HTML layer where a bare --> cannot reach it — the
+// <!-- --> closer carries a literal terminator into the raw stream, and being
+// a complete comment it renders as nothing even when appended unnecessarily.
+func TestRDJSONContainerNestedOpensGetContainerAwareClosers(t *testing.T) {
+	sugg := `,"suggestions":[{"range":{"start":{"line":5}},"text":"fixed"}]`
+	block := "```suggestion\nfixed\n```"
+	cases := []struct {
+		name, message, suggJSON, want string
+	}{
+		{"fence in a list item gets no closer", "- item\n  ```go", sugg, "- item\n  ```go\n\n" + block},
+		{"indented fence without a container keeps its closer", "bad:\n  ```", sugg, "bad:\n  ```\n```\n\n" + block},
+		{"fence on the marker line stays untracked", "- ```go", sugg, "- ```go\n\n" + block},
+		{"comment opened in a list item", "- <!-- note", sugg, "- <!-- note\n<!-- -->\n\n" + block},
+		{"comment opened in an ordered item", "1. <!-- note", sugg, "1. <!-- note\n<!-- -->\n\n" + block},
+		{"comment opened in a blockquote", "> <!-- note", sugg, "> <!-- note\n<!-- -->\n\n" + block},
+		{"comment behind a quoted list marker", "> - <!-- note", sugg, "> - <!-- note\n<!-- -->\n\n" + block},
+		{"comment trailing an html tag line", "<div> <!--", sugg, "<div> <!--\n<!-- -->\n\n" + block},
+		{"closed container comment left alone", "- <!-- note -->", sugg, "- <!-- note -->\n\n" + block},
+		{"list comment closed then reopened", "- <!-- a --> <!--", sugg, "- <!-- a --> <!--\n<!-- -->\n\n" + block},
+		{"later raw container line terminates the dangle", "- <!-- note\n- <!-- x -->", sugg, "- <!-- note\n- <!-- x -->\n\n" + block},
+		{"mid-content comment in an item stays inline", "- x <!-- note", sugg, "- x <!-- note\n\n" + block},
+		{"container comment then dangling list fence", "- <!-- note\n- item\n  ```go", sugg, "- <!-- note\n- item\n  ```go\n<!-- -->\n\n" + block},
+		// A column-0 paragraph after a blank line sits outside any container,
+		// so a later indented fence is top-level again and keeps its closer;
+		// a blank inside an item (continuation indent) or a lazy continuation
+		// line does not end the list.
+		{"prose after a blank closes the container context", "- a\n\nB\n\n  ```go", sugg, "- a\n\nB\n\n  ```go\n```\n\n" + block},
+		{"blank inside an item keeps the context", "- a\n\n  ```go", sugg, "- a\n\n  ```go\n\n" + block},
+		{"lazy continuation keeps the context", "- a\nB\n  ```go", sugg, "- a\nB\n  ```go\n\n" + block},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			src := `{"diagnostics":[{"message":` + strconv.Quote(c.message) +
+				`,"location":{"path":"a.go","range":{"start":{"line":5}}}` + c.suggJSON + `}]}`
+			in, err := ParseRDJSON([]byte(src))
+			if err != nil {
+				t.Fatalf("ParseRDJSON: %v", err)
+			}
+			if f := in.Findings[0]; f.Body != c.want {
+				t.Errorf("body =\n%q\nwant\n%q", f.Body, c.want)
+			}
+		})
+	}
+}
+
 // Suggestion text edge cases: a text carrying backtick fences needs a longer
 // outer fence to survive rendering; a trailing newline is not doubled; empty
 // text is a valid deletion suggestion (GitHub deletes the anchored lines).
