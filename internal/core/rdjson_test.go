@@ -338,6 +338,12 @@ func TestRDJSONDanglingMessageFenceIsClosedBeforeBlocks(t *testing.T) {
 		{"info-string line cannot close", "bad:\n```go\nx\n```go", sugg, "bad:\n```go\nx\n```go\n```\n\n" + block},
 		{"balanced fence left alone", "ok:\n```go\nx\n```", sugg, "ok:\n```go\nx\n```\n\n" + block},
 		{"no blocks: dangling left alone", "bad:\n```", "", "bad:\n```"},
+		// A backtick fence's info string may not contain backticks, so a run
+		// with more backticks later on the line is a paragraph with inline
+		// code — a spurious closer here would itself open a real fence and
+		// swallow the blocks. Tilde fence info strings may carry backticks.
+		{"backtick run with a later backtick is inline code", "```foo``` bar", sugg, "```foo``` bar\n\n" + block},
+		{"tilde fence info string may carry backticks", "~~~go`x", sugg, "~~~go`x\n~~~\n\n" + block},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -169,7 +169,8 @@ func (d rdDiagnostic) aligned(s rdSuggestion) bool {
 // the message and swallow appended text, matched closely enough for
 // linter/agent-authored messages: a code fence (a run of 3+ backticks or tildes
 // indented at most 3 spaces; only a bare run of the same character at least as
-// long closes it — an info string is allowed on the opening fence only) and a
+// long closes it — an info string is allowed on the opening fence only, and a
+// backtick fence's info string may not contain backticks) and a
 // line-initial <!-- comment (an HTML block, type 2, that runs until a line
 // containing -->). The two suppress each other — inside a fence <!-- is literal
 // text, inside a comment a fence marker is comment prose. A comment dangles at
@@ -216,6 +217,12 @@ func danglingCloser(text string) string {
 		}
 		switch {
 		case openLen == 0:
+			// A backtick fence's info string may not contain backticks —
+			// such a line is a paragraph with inline code, not a fence.
+			// (Tilde fence info strings may carry backticks.)
+			if c == '`' && strings.Contains(rest[run:], "`") {
+				continue
+			}
 			open, openLen = c, run
 		case c == open && run >= openLen && strings.TrimSpace(rest[run:]) == "":
 			openLen = 0
